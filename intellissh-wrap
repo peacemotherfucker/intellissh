@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-secdef-wrap — AI-augmented terminal wrapper for SecDef.
+intellissh-wrap — AI-augmented terminal wrapper for IntelliSSH.
 
 Wraps any command (ssh, bash, docker exec, etc.) in a PTY, transparently
 passing through all I/O while capturing commands and output. Sends
-transcripts to the secdef-daemon for cross-session situation awareness.
+transcripts to the intellissh-daemon for cross-session situation awareness.
 
 Ctrl+G summons the AI for analysis or a free-form question.
 
 Usage:
-    secdef wrap ssh analyst@10.0.1.20
-    secdef wrap bash
-    secdef wrap docker exec -it container /bin/bash
+    intellissh wrap ssh analyst@10.0.1.20
+    intellissh wrap bash
+    intellissh wrap docker exec -it container /bin/bash
 """
 
 import sys
@@ -33,11 +33,11 @@ from pathlib import Path
 # ─── Profile & paths ─────────────────────────────────────────────────────────
 
 def _resolve_base_dir():
-    profile = os.environ.get("SECDEF_PROFILE", "").strip()
+    profile = os.environ.get("INTELLISSH_PROFILE", "").strip()
     if not profile:
-        return Path("~/.secdef").expanduser(), None
+        return Path("~/.intellissh").expanduser(), None
     safe = "".join(c for c in profile if c.isalnum() or c in "_-")[:32]
-    return Path(f"~/.secdef/profiles/{safe}").expanduser(), safe
+    return Path(f"~/.intellissh/profiles/{safe}").expanduser(), safe
 
 BASE_DIR, PROFILE = _resolve_base_dir()
 SOCKET_PATH = BASE_DIR / "daemon.sock"
@@ -86,7 +86,7 @@ def get_terminal_width():
 # ─── Daemon communication ────────────────────────────────────────────────────
 
 class DaemonClient:
-    """Communicates with secdef-daemon via UNIX socket."""
+    """Communicates with intellissh-daemon via UNIX socket."""
 
     def __init__(self):
         self.connected = False
@@ -201,7 +201,7 @@ def display_ai_panel(text, suggestions=None, is_alert=False):
     inner_w = width - 4
 
     color = C.YELLOW if is_alert else C.CYAN
-    label = " 💡 SecDef Alert " if is_alert else " 💡 SecDef "
+    label = " 💡 IntelliSSH Alert " if is_alert else " 💡 IntelliSSH "
 
     sys.stdout.write("\r\n")
 
@@ -242,10 +242,10 @@ def display_prompt_panel():
     color = C.MAGENTA
 
     sys.stdout.write("\r\n")
-    sys.stdout.write(f"{color}{C.TL}{C.HLINE} SecDef Query {C.HLINE * max(inner_w - 14, 1)}{C.TR}{C.RESET}\n")
+    sys.stdout.write(f"{color}{C.TL}{C.HLINE} IntelliSSH Query {C.HLINE * max(inner_w - 14, 1)}{C.TR}{C.RESET}\n")
     sys.stdout.write(f"{color}{C.VLINE}{C.RESET} Ask a question (or Enter for auto-analysis):{' ' * max(inner_w - 47, 0)}{color} {C.VLINE}{C.RESET}\n")
     sys.stdout.write(f"{color}{C.BL}{C.HLINE * (inner_w + 2)}{C.BR}{C.RESET}\n")
-    sys.stdout.write(f"{C.MAGENTA}{C.BOLD}secdef> {C.RESET}")
+    sys.stdout.write(f"{C.MAGENTA}{C.BOLD}intellissh> {C.RESET}")
     sys.stdout.flush()
 
 
@@ -387,9 +387,9 @@ def run_pty_wrapper(cmd_args, session_name):
     # Show connection banner
     profile_label = f" | Profile: {PROFILE}" if PROFILE else ""
     if daemon_ok:
-        banner = f"\033[2m[secdef] Connected{profile_label} | Session: {session_name} | Ctrl+G for AI\033[0m\r\n"
+        banner = f"\033[2m[intellissh] Connected{profile_label} | Session: {session_name} | Ctrl+G for AI\033[0m\r\n"
     else:
-        banner = f"\033[2m[secdef] Daemon not running (start: secdef daemon){profile_label} | Ctrl+G unavailable\033[0m\r\n"
+        banner = f"\033[2m[intellissh] Daemon not running (start: intellissh daemon){profile_label} | Ctrl+G unavailable\033[0m\r\n"
     os.write(sys.stdout.fileno(), banner.encode())
 
     try:
@@ -559,16 +559,16 @@ def run_pty_wrapper(cmd_args, session_name):
             pass
         # Final flush
         flush_to_daemon()
-        sys.stdout.write(f"\n\033[2m[secdef] Session '{session_name}' ended.\033[0m\n")
+        sys.stdout.write(f"\n\033[2m[intellissh] Session '{session_name}' ended.\033[0m\n")
 
 
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: secdef wrap <command> [args...]")
-        print("       secdef wrap ssh analyst@10.0.1.20")
-        print("       secdef wrap bash")
+        print("Usage: intellissh wrap <command> [args...]")
+        print("       intellissh wrap ssh analyst@10.0.1.20")
+        print("       intellissh wrap bash")
         sys.exit(1)
 
     cmd_args = sys.argv[1:]

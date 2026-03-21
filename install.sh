@@ -6,7 +6,7 @@ CYAN='\033[0;36m'; BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
 
 echo -e "${BOLD}${CYAN}"
 echo "╔══════════════════════════════════════════════════╗"
-echo "║    SecDef — AI-Augmented Blue Team Terminal       ║"
+echo "║    IntelliSSH — AI-Augmented Blue Team Terminal       ║"
 echo "╚══════════════════════════════════════════════════╝"
 echo -e "${NC}"
 
@@ -46,12 +46,12 @@ else
 fi
 
 # ── Install binaries ──
-echo -e "${BOLD}[4/5] Installing secdef...${NC}"
+echo -e "${BOLD}[4/5] Installing intellissh...${NC}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${HOME}/.local/bin"
 mkdir -p "$INSTALL_DIR"
 
-for f in secdef secdef-daemon secdef-wrap; do
+for f in intellissh intellissh-daemon intellissh-wrap; do
     cp "${SCRIPT_DIR}/${f}" "$INSTALL_DIR/${f}"
     chmod +x "$INSTALL_DIR/${f}"
     echo -e "  ${GREEN}✓${NC} ${f} → ${INSTALL_DIR}/${f}"
@@ -63,17 +63,17 @@ if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
         bash) RC="$HOME/.bashrc" ;; zsh) RC="$HOME/.zshrc" ;; *) RC="$HOME/.profile" ;;
     esac
     echo '' >> "$RC"
-    echo '# SecDef' >> "$RC"
+    echo '# IntelliSSH' >> "$RC"
     echo "export PATH=\"\$HOME/.local/bin:\$PATH\"" >> "$RC"
     echo -e "  ${YELLOW}PATH updated in ${RC} — run: source ${RC}${NC}"
 fi
 
 # ── Init contexts ──
 echo -e "${BOLD}[5/5] Initializing...${NC}"
-if [ ! -d "$HOME/.secdef/contexts" ] || [ -z "$(ls -A "$HOME/.secdef/contexts" 2>/dev/null)" ]; then
-    "$INSTALL_DIR/secdef" init
+if [ ! -d "$HOME/.intellissh/contexts" ] || [ -z "$(ls -A "$HOME/.intellissh/contexts" 2>/dev/null)" ]; then
+    "$INSTALL_DIR/intellissh" init
 else
-    echo -e "  ${DIM}Contexts exist. Run 'secdef init' to reset.${NC}"
+    echo -e "  ${DIM}Contexts exist. Run 'intellissh init' to reset.${NC}"
 fi
 
 # ── Models ──
@@ -90,16 +90,16 @@ echo ""
 echo -e "${BOLD}${GREEN}Installation complete!${NC}"
 echo ""
 echo -e "${BOLD}Quick start:${NC}"
-echo -e "  ${CYAN}1.${NC} Edit context files:  ${DIM}nano ~/.secdef/contexts/environment.md${NC}"
-echo -e "  ${CYAN}2.${NC} Build RAG index:     ${DIM}secdef index${NC}"
-echo -e "  ${CYAN}3.${NC} Start the AI daemon: ${DIM}secdef daemon${NC}"
-echo -e "  ${CYAN}4.${NC} Wrap your SSH:       ${DIM}secdef wrap ssh analyst@10.0.1.20${NC}"
+echo -e "  ${CYAN}1.${NC} Edit context files:  ${DIM}nano ~/.intellissh/contexts/environment.md${NC}"
+echo -e "  ${CYAN}2.${NC} Build RAG index:     ${DIM}intellissh index${NC}"
+echo -e "  ${CYAN}3.${NC} Start the AI daemon: ${DIM}intellissh daemon${NC}"
+echo -e "  ${CYAN}4.${NC} Wrap your SSH:       ${DIM}intellissh wrap ssh analyst@10.0.1.20${NC}"
 echo -e "  ${CYAN}5.${NC} Press ${BOLD}Ctrl+G${NC} inside the session to summon the AI"
 echo ""
 echo -e "${BOLD}Commands:${NC}"
-echo -e "  ${DIM}secdef daemon${NC}                      Start AI daemon"
-echo -e "  ${DIM}secdef wrap ssh user@host${NC}           AI-augmented SSH"
-echo -e "  ${DIM}secdef wrap bash${NC}                    AI-augmented local shell"
-echo -e "  ${DIM}secdef status${NC}                       Show active sessions"
-echo -e "  ${DIM}secdef ask \"what port is SIEM on?\"${NC}  Quick question"
+echo -e "  ${DIM}intellissh daemon${NC}                      Start AI daemon"
+echo -e "  ${DIM}intellissh wrap ssh user@host${NC}           AI-augmented SSH"
+echo -e "  ${DIM}intellissh wrap bash${NC}                    AI-augmented local shell"
+echo -e "  ${DIM}intellissh status${NC}                       Show active sessions"
+echo -e "  ${DIM}intellissh ask \"what port is SIEM on?\"${NC}  Quick question"
 echo ""

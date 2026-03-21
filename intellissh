@@ -1,27 +1,27 @@
 #!/usr/bin/env python3
 """
-secdef — AI-Augmented Blue Team Terminal
+intellissh — AI-Augmented Blue Team Terminal
 =========================================
 An AI-powered terminal wrapper that provides real-time situational awareness
 during security defense training. Wraps SSH/shell sessions, captures all I/O,
 and provides cross-session analysis via a local Ollama LLM + RAG.
 
 Commands:
-    secdef daemon                Start the background AI daemon
-    secdef daemon stop           Stop the daemon
-    secdef wrap ssh user@host    Wrap an SSH session with AI augmentation
-    secdef wrap bash             Wrap a local shell
-    secdef init                  Initialize context files
-    secdef index [--force]       Build/rebuild the RAG vector store
-    secdef status                Show daemon status and active sessions
-    secdef flush                 Reset all session state (clean sheet)
-    secdef profiles              List all profiles with status
-    secdef ask "question"        Quick one-shot question (no wrapping)
+    intellissh daemon                Start the background AI daemon
+    intellissh daemon stop           Stop the daemon
+    intellissh wrap ssh user@host    Wrap an SSH session with AI augmentation
+    intellissh wrap bash             Wrap a local shell
+    intellissh init                  Initialize context files
+    intellissh index [--force]       Build/rebuild the RAG vector store
+    intellissh status                Show daemon status and active sessions
+    intellissh flush                 Reset all session state (clean sheet)
+    intellissh profiles              List all profiles with status
+    intellissh ask "question"        Quick one-shot question (no wrapping)
 
 Profile isolation (run two completely independent environments in parallel):
-    secdef --profile net1 daemon
-    secdef --profile net1 wrap ssh analyst@10.0.1.20
-    export SECDEF_PROFILE=net1   # set once per shell session instead of --profile
+    intellissh --profile net1 daemon
+    intellissh --profile net1 wrap ssh analyst@10.0.1.20
+    export INTELLISSH_PROFILE=net1   # set once per shell session instead of --profile
 """
 
 import sys
@@ -38,7 +38,7 @@ from pathlib import Path
 
 def _parse_profile():
     """Strip --profile NAME (or -p NAME) from sys.argv and return the profile name."""
-    profile = os.environ.get("SECDEF_PROFILE", "").strip() or None
+    profile = os.environ.get("INTELLISSH_PROFILE", "").strip() or None
     i = 1
     while i < len(sys.argv):
         if sys.argv[i] in ("--profile", "-p") and i + 1 < len(sys.argv):
@@ -51,9 +51,9 @@ def _parse_profile():
 
 def _resolve_base_dir(profile):
     if not profile:
-        return Path("~/.secdef").expanduser()
+        return Path("~/.intellissh").expanduser()
     safe = "".join(c for c in profile if c.isalnum() or c in "_-")[:32]
-    return Path(f"~/.secdef/profiles/{safe}").expanduser()
+    return Path(f"~/.intellissh/profiles/{safe}").expanduser()
 
 
 PROFILE = _parse_profile()
@@ -179,7 +179,7 @@ def cmd_daemon(args):
         print(C.dim(f"  Socket: {SOCKET_PATH}"))
         return
 
-    daemon_script = SCRIPT_DIR / "secdef-daemon"
+    daemon_script = SCRIPT_DIR / "intellissh-daemon"
     if not daemon_script.exists():
         print(C.red(f"Cannot find: {daemon_script}"))
         sys.exit(1)
@@ -195,7 +195,7 @@ def cmd_daemon(args):
         print(C.dim(f"  Start it with: ollama serve"))
         sys.exit(1)
 
-    child_env = {**os.environ, "SECDEF_PROFILE": PROFILE or ""}
+    child_env = {**os.environ, "INTELLISSH_PROFILE": PROFILE or ""}
 
     if "--foreground" in args or "-f" in args:
         print(C.bold("Starting daemon in foreground..."))
@@ -231,9 +231,9 @@ def cmd_daemon(args):
 
 def cmd_wrap(args):
     if not args:
-        print(C.red("Usage: secdef wrap <command> [args...]"))
-        print(C.dim("  secdef wrap ssh analyst@10.0.1.20"))
-        print(C.dim("  secdef wrap bash"))
+        print(C.red("Usage: intellissh wrap <command> [args...]"))
+        print(C.dim("  intellissh wrap ssh analyst@10.0.1.20"))
+        print(C.dim("  intellissh wrap bash"))
         sys.exit(1)
 
     if not is_daemon_running():
@@ -242,12 +242,12 @@ def cmd_wrap(args):
         import time
         time.sleep(1)
 
-    wrap_script = SCRIPT_DIR / "secdef-wrap"
+    wrap_script = SCRIPT_DIR / "intellissh-wrap"
     if not wrap_script.exists():
         print(C.red(f"Cannot find: {wrap_script}"))
         sys.exit(1)
 
-    os.environ["SECDEF_PROFILE"] = PROFILE or ""
+    os.environ["INTELLISSH_PROFILE"] = PROFILE or ""
     os.execvp(sys.executable, [sys.executable, str(wrap_script)] + args)
 
 
@@ -273,7 +273,7 @@ def cmd_flush(args):
 def cmd_status(args):
     if not is_daemon_running():
         print(C.red("Daemon is not running."))
-        print(C.dim("  Start with: secdef daemon"))
+        print(C.dim("  Start with: intellissh daemon"))
         return
 
     import socket as sock
@@ -286,7 +286,7 @@ def cmd_status(args):
         s.close()
         resp = json.loads(data.decode())
 
-        print(C.bold("\nSecDef Status"))
+        print(C.bold("\nIntelliSSH Status"))
         print(C.dim("─" * 40))
         pid = PID_PATH.read_text().strip() if PID_PATH.exists() else "?"
         if PROFILE:
@@ -305,7 +305,7 @@ def cmd_status(args):
             print(C.bold("Situation:"))
             print(situation)
         else:
-            print(C.dim("  No activity yet. Wrap a session: secdef wrap ssh user@host"))
+            print(C.dim("  No activity yet. Wrap a session: intellissh wrap ssh user@host"))
         print()
     except Exception as e:
         print(C.red(f"Cannot connect to daemon: {e}"))
@@ -416,11 +416,11 @@ def cmd_init(args):
         print(C.green(f"  Created: {path}"))
 
     save_config(config)
-    print(C.bold(f"\nEdit contexts in {ctx_dir}, then run: secdef index"))
+    print(C.bold(f"\nEdit contexts in {ctx_dir}, then run: intellissh index"))
 
 
 def cmd_index(args):
-    """Build RAG index using secdef-daemon's indexing logic."""
+    """Build RAG index using intellissh-daemon's indexing logic."""
     config = load_config()
     ctx_dir = Path(config["context_dir"]).expanduser()
     force = "--force" in args or "-f" in args
@@ -470,12 +470,12 @@ def cmd_index(args):
     print(C.bold(f"Indexing {file_count} files → {len(all_chunks)} chunks"))
 
     # Build ChromaDB
-    db_path = Path(config.get("db_dir", "~/.secdef/vectordb")).expanduser()
+    db_path = Path(config.get("db_dir", "~/.intellissh/vectordb")).expanduser()
     db_path.mkdir(parents=True, exist_ok=True)
     client = chromadb.PersistentClient(path=str(db_path))
 
     try:
-        client.delete_collection("secdef_contexts")
+        client.delete_collection("intellissh_contexts")
     except Exception:
         pass
 
@@ -498,7 +498,7 @@ def cmd_index(args):
         def __call__(self, input):
             return embed_fn(input)
 
-    collection = client.create_collection("secdef_contexts", embedding_function=EmbFn(),
+    collection = client.create_collection("intellissh_contexts", embedding_function=EmbFn(),
                                           metadata={"hnsw:space": "cosine"})
 
     batch_size = 20
@@ -561,7 +561,7 @@ def _chunk(text, source, config, chunk_size=None, overlap=None):
 
 def cmd_ask(args):
     if not args:
-        print(C.red("Usage: secdef ask \"question\""))
+        print(C.red("Usage: intellissh ask \"question\""))
         return
     question = " ".join(args)
     config = load_config()
@@ -575,7 +575,7 @@ def cmd_ask(args):
     # Simple direct query to Ollama with RAG context
     try:
         import chromadb
-        db_path = Path(config.get("db_dir", "~/.secdef/vectordb")).expanduser()
+        db_path = Path(config.get("db_dir", "~/.intellissh/vectordb")).expanduser()
         if db_path.exists():
             client = chromadb.PersistentClient(path=str(db_path))
 
@@ -589,7 +589,7 @@ def cmd_ask(args):
                 def __call__(self, input):
                     return embed_fn_inner(input)
 
-            col = client.get_or_create_collection("secdef_contexts", embedding_function=EF(),
+            col = client.get_or_create_collection("intellissh_contexts", embedding_function=EF(),
                                                    metadata={"hnsw:space": "cosine"})
             if col.count() > 0:
                 res = col.query(query_texts=[question], n_results=config.get("rag_top_k", 6))
@@ -601,7 +601,7 @@ def cmd_ask(args):
     except Exception:
         ctx = ""
 
-    system = "You are SecDef, a blue team security assistant. Be concise and direct."
+    system = "You are IntelliSSH, a blue team security assistant. Be concise and direct."
     if ctx:
         system += f"\n\nENVIRONMENT CONTEXT:\n{ctx}"
 
@@ -633,7 +633,7 @@ def cmd_ask(args):
 
 def cmd_profiles(args):
     """List all profiles with their running status and dashboard URL."""
-    print(C.bold("\nSecDef Profiles"))
+    print(C.bold("\nIntelliSSH Profiles"))
     print(C.dim("─" * 50))
 
     def _row(name, base_dir):
@@ -646,37 +646,37 @@ def cmd_profiles(args):
         print(f"  {C.cyan(name):<30} {status}{active}{dashboard}")
 
     _row("default", _resolve_base_dir(None))
-    profiles_dir = Path("~/.secdef/profiles").expanduser()
+    profiles_dir = Path("~/.intellissh/profiles").expanduser()
     if profiles_dir.exists():
         for p in sorted(profiles_dir.iterdir()):
             if p.is_dir():
                 _row(p.name, p)
     print()
-    print(C.dim("  Usage: secdef --profile <name> daemon"))
-    print(C.dim("         export SECDEF_PROFILE=<name>"))
+    print(C.dim("  Usage: intellissh --profile <name> daemon"))
+    print(C.dim("         export INTELLISSH_PROFILE=<name>"))
     print()
 
 
 # ─── Main router ────────────────────────────────────────────────────────────
 
 def print_usage():
-    print(C.bold(C.cyan("SecDef — AI-Augmented Blue Team Terminal\n")))
-    print(f"  {C.cyan('secdef daemon')}                  Start the AI daemon")
-    print(f"  {C.cyan('secdef daemon stop')}             Stop the daemon")
-    print(f"  {C.cyan('secdef daemon -f')}               Start in foreground (debug)")
-    print(f"  {C.cyan('secdef wrap ssh user@host')}      Wrap an SSH session")
-    print(f"  {C.cyan('secdef wrap bash')}               Wrap a local shell")
-    print(f"  {C.cyan('secdef status')}                  Show daemon status")
-    print(f"  {C.cyan('secdef flush')}                   Reset all session state")
-    print(f"  {C.cyan('secdef profiles')}                List all profiles")
-    print(f"  {C.cyan('secdef init')}                    Initialize context files")
-    print(f"  {C.cyan('secdef index')}                   Build RAG vector store")
-    print(f"  {C.cyan('secdef ask \"question\"')}          Quick one-shot question")
+    print(C.bold(C.cyan("IntelliSSH — AI-Augmented Blue Team Terminal\n")))
+    print(f"  {C.cyan('intellissh daemon')}                  Start the AI daemon")
+    print(f"  {C.cyan('intellissh daemon stop')}             Stop the daemon")
+    print(f"  {C.cyan('intellissh daemon -f')}               Start in foreground (debug)")
+    print(f"  {C.cyan('intellissh wrap ssh user@host')}      Wrap an SSH session")
+    print(f"  {C.cyan('intellissh wrap bash')}               Wrap a local shell")
+    print(f"  {C.cyan('intellissh status')}                  Show daemon status")
+    print(f"  {C.cyan('intellissh flush')}                   Reset all session state")
+    print(f"  {C.cyan('intellissh profiles')}                List all profiles")
+    print(f"  {C.cyan('intellissh init')}                    Initialize context files")
+    print(f"  {C.cyan('intellissh index')}                   Build RAG vector store")
+    print(f"  {C.cyan('intellissh ask \"question\"')}          Quick one-shot question")
     print()
     print(C.dim("  Profile flag (isolate state per environment):"))
-    print(C.dim("    secdef --profile net1 daemon"))
-    print(C.dim("    secdef --profile net1 wrap ssh user@host"))
-    print(C.dim("    export SECDEF_PROFILE=net1   # set once per shell session"))
+    print(C.dim("    intellissh --profile net1 daemon"))
+    print(C.dim("    intellissh --profile net1 wrap ssh user@host"))
+    print(C.dim("    export INTELLISSH_PROFILE=net1   # set once per shell session"))
     print()
     print(C.dim("  During a wrapped session, press Ctrl+G to summon the AI."))
 

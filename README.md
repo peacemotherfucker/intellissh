@@ -1,4 +1,4 @@
-# SecDef — AI-Augmented Blue Team Terminal
+# IntelliSSH — AI-Augmented Blue Team Terminal
 
 A real-time AI assistant that wraps your SSH/shell sessions during security defense training. It sees your commands and output across multiple sessions, builds situational awareness, auto-detects security events, and provides actionable suggestions — all powered by a local Ollama LLM with RAG.
 
@@ -8,11 +8,11 @@ A real-time AI assistant that wraps your SSH/shell sessions during security defe
 
 ## How It Works
 
-SecDef runs as two components: a **background daemon** (the brain) and **PTY wrappers** (the eyes). The daemon accumulates context from all your terminal sessions, so when you SSH into server A, find alerts, then SSH into server B to investigate — the AI remembers why you're there.
+IntelliSSH runs as two components: a **background daemon** (the brain) and **PTY wrappers** (the eyes). The daemon accumulates context from all your terminal sessions, so when you SSH into server A, find alerts, then SSH into server B to investigate — the AI remembers why you're there.
 
 ```
   Terminal 1                    Terminal 2                    Terminal 3
-  secdef wrap                   secdef wrap                   secdef wrap
+  intellissh wrap                   intellissh wrap                   intellissh wrap
   ssh ids-sensor                ssh web-server                ssh siem-server
        │                             │                             │
        │  commands + output           │  commands + output          │
@@ -20,7 +20,7 @@ SecDef runs as two components: a **background daemon** (the brain) and **PTY wra
                   │
                   ▼
        ┌─────────────────────────────────────┐
-       │         secdef daemon                │
+       │         intellissh daemon                │
        │                                      │
        │  Situation Awareness Engine           │
        │  ├─ Rolling transcript (all sessions)│
@@ -42,7 +42,7 @@ SecDef runs as two components: a **background daemon** (the brain) and **PTY wra
 # 1. Install Ollama
 curl -fsSL https://ollama.ai/install.sh | sh
 
-# 2. Install SecDef
+# 2. Install IntelliSSH
 chmod +x install.sh
 ./install.sh
 
@@ -51,16 +51,16 @@ ollama pull qwen3:14b
 ollama pull nomic-embed-text
 
 # 4. Edit context files for YOUR environment
-nano ~/.secdef/contexts/environment.md
+nano ~/.intellissh/contexts/environment.md
 
 # 5. Build RAG index
-secdef index
+intellissh index
 
 # 6. Start the AI daemon
-secdef daemon
+intellissh daemon
 
 # 7. Wrap your SSH sessions
-secdef wrap ssh analyst@10.0.1.20
+intellissh wrap ssh analyst@10.0.1.20
 ```
 
 ---
@@ -70,21 +70,21 @@ secdef wrap ssh analyst@10.0.1.20
 ### Starting Up
 
 ```bash
-secdef daemon              # Start the AI brain (background)
-secdef daemon -f           # Start in foreground (see logs)
-secdef daemon stop         # Stop the daemon
-secdef status              # Check daemon + active sessions
-secdef profiles            # List all profiles with status and dashboard URLs
+intellissh daemon              # Start the AI brain (background)
+intellissh daemon -f           # Start in foreground (see logs)
+intellissh daemon stop         # Stop the daemon
+intellissh status              # Check daemon + active sessions
+intellissh profiles            # List all profiles with status and dashboard URLs
 ```
 
 ### Wrapping Sessions
 
 ```bash
-secdef wrap ssh analyst@ids-sensor        # Wrap SSH
-secdef wrap ssh root@10.0.3.10            # Wrap SSH with IP
-secdef wrap bash                           # Wrap local shell
-secdef wrap docker exec -it siem bash      # Wrap docker
-secdef wrap kubectl exec -it pod -- bash   # Wrap kubernetes
+intellissh wrap ssh analyst@ids-sensor        # Wrap SSH
+intellissh wrap ssh root@10.0.3.10            # Wrap SSH with IP
+intellissh wrap bash                           # Wrap local shell
+intellissh wrap docker exec -it siem bash      # Wrap docker
+intellissh wrap kubectl exec -it pod -- bash   # Wrap kubernetes
 ```
 
 Your session works exactly like normal — all input/output passes through transparently. The AI observes silently in the background.
@@ -100,10 +100,10 @@ analyst@ids-sensor:~$ tail -20 /var/log/suricata/fast.log
 
 [Ctrl+G]
 
-┌─ SecDef Query ──────────────────────────────────────────┐
+┌─ IntelliSSH Query ──────────────────────────────────────────┐
 │ Ask a question (or Enter for auto-analysis):            │
 └─────────────────────────────────────────────────────────┘
-secdef> _
+intellissh> _
 ```
 
 - **Press Enter** with no question → auto-analyzes the latest output
@@ -112,7 +112,7 @@ secdef> _
 Example responses:
 
 ```
-┌─ 💡 SecDef ─────────────────────────────────────────────┐
+┌─ 💡 IntelliSSH ─────────────────────────────────────────────┐
 │ Repeated reverse shell alerts from 10.0.2.100 to       │
 │ web-server (10.0.3.10) on port 4444. The web server     │
 │ appears compromised.                                     │
@@ -157,17 +157,17 @@ IOCs are visible in the dashboard with type badges and frequency counts. The AI 
 
 ### Persistent Memory & Flushing
 
-The daemon saves its full state (transcript, sessions, IOCs, events, AI analyses) to `~/.secdef/state.json` every 30 seconds. If the daemon crashes or the machine reboots, state is automatically restored on next start — the AI picks up where it left off.
+The daemon saves its full state (transcript, sessions, IOCs, events, AI analyses) to `~/.intellissh/state.json` every 30 seconds. If the daemon crashes or the machine reboots, state is automatically restored on next start — the AI picks up where it left off.
 
 ```bash
-secdef flush              # Wipe all state and start a clean sheet
+intellissh flush              # Wipe all state and start a clean sheet
 ```
 
 Use `flush` at the start of a new exercise or when you want the AI to forget everything it has seen.
 
 ### Parallel Profiles (Multiple Independent Environments)
 
-Run two completely isolated SecDef instances in parallel — separate state, separate IOCs, separate AI analyses, separate dashboards. Nothing leaks between them.
+Run two completely isolated IntelliSSH instances in parallel — separate state, separate IOCs, separate AI analyses, separate dashboards. Nothing leaks between them.
 
 **Option A — env var (recommended for shell sessions):**
 
@@ -175,25 +175,25 @@ Open a dedicated terminal window for each environment and set the profile once:
 
 ```bash
 # Terminal window for Network 1
-export SECDEF_PROFILE=net1
-secdef daemon
-secdef wrap ssh analyst@10.0.1.20
-secdef wrap ssh analyst@10.0.1.30
+export INTELLISSH_PROFILE=net1
+intellissh daemon
+intellissh wrap ssh analyst@10.0.1.20
+intellissh wrap ssh analyst@10.0.1.30
 
 # Terminal window for Network 2
-export SECDEF_PROFILE=net2
-secdef daemon
-secdef wrap ssh analyst@192.168.2.10
-secdef wrap ssh analyst@192.168.2.20
+export INTELLISSH_PROFILE=net2
+intellissh daemon
+intellissh wrap ssh analyst@192.168.2.10
+intellissh wrap ssh analyst@192.168.2.20
 ```
 
 **Option B — `--profile` flag (explicit per-command):**
 
 ```bash
-secdef --profile net1 daemon
-secdef --profile net1 wrap ssh analyst@10.0.1.20
-secdef --profile net2 daemon
-secdef --profile net2 wrap ssh analyst@192.168.2.10
+intellissh --profile net1 daemon
+intellissh --profile net1 wrap ssh analyst@10.0.1.20
+intellissh --profile net2 daemon
+intellissh --profile net2 wrap ssh analyst@192.168.2.10
 ```
 
 Both options can be mixed — the flag always takes precedence over the env var.
@@ -201,8 +201,8 @@ Both options can be mixed — the flag always takes precedence over the env var.
 **Checking what's running:**
 
 ```bash
-secdef profiles
-# SecDef Profiles
+intellissh profiles
+# IntelliSSH Profiles
 # ──────────────────────────────────────────────────
 #   default        stopped
 #   net1           running  ← active   http://127.0.0.1:8033
@@ -210,28 +210,28 @@ secdef profiles
 ```
 
 Each profile gets its own:
-- State, transcript, IOCs, AI analyses (`~/.secdef/profiles/<name>/state.json`)
+- State, transcript, IOCs, AI analyses (`~/.intellissh/profiles/<name>/state.json`)
 - Dashboard on an auto-assigned port (8033, 8034, …)
-- Context files and RAG vector store (`~/.secdef/profiles/<name>/contexts/` and `vectordb/`)
-- Config (`~/.secdef/profiles/<name>/config.json`) — copy from default and customise per environment
-- Logs (`~/.secdef/profiles/<name>/logs/`)
+- Context files and RAG vector store (`~/.intellissh/profiles/<name>/contexts/` and `vectordb/`)
+- Config (`~/.intellissh/profiles/<name>/config.json`) — copy from default and customise per environment
+- Logs (`~/.intellissh/profiles/<name>/logs/`)
 
-The default profile (no `--profile` flag, no env var) continues to use `~/.secdef/` as before.
+The default profile (no `--profile` flag, no env var) continues to use `~/.intellissh/` as before.
 
 **Per-profile context files:**
 
 Each profile has its own context directory, so you can describe each network separately:
 
 ```bash
-export SECDEF_PROFILE=net1
-secdef init               # creates ~/.secdef/profiles/net1/contexts/
-nano ~/.secdef/profiles/net1/contexts/environment.md   # describe Network 1
-secdef index
+export INTELLISSH_PROFILE=net1
+intellissh init               # creates ~/.intellissh/profiles/net1/contexts/
+nano ~/.intellissh/profiles/net1/contexts/environment.md   # describe Network 1
+intellissh index
 
-export SECDEF_PROFILE=net2
-secdef init               # creates ~/.secdef/profiles/net2/contexts/
-nano ~/.secdef/profiles/net2/contexts/environment.md   # describe Network 2
-secdef index
+export INTELLISSH_PROFILE=net2
+intellissh init               # creates ~/.intellissh/profiles/net2/contexts/
+nano ~/.intellissh/profiles/net2/contexts/environment.md   # describe Network 2
+intellissh index
 ```
 
 ### Continuous Analysis
@@ -245,8 +245,8 @@ Each Ctrl+G analysis builds on the previous ones rather than starting from scrat
 ### Quick Questions (No Session)
 
 ```bash
-secdef ask "what port is the SIEM dashboard on?"
-secdef ask "write a suricata rule for DNS tunneling"
+intellissh ask "what port is the SIEM dashboard on?"
+intellissh ask "write a suricata rule for DNS tunneling"
 ```
 
 ---
@@ -270,10 +270,10 @@ No JavaScript frameworks, no build step — it's a single self-contained HTML pa
 
 ## Context Files
 
-Edit `~/.secdef/contexts/` to match your training environment, then run `secdef index`.
+Edit `~/.intellissh/contexts/` to match your training environment, then run `intellissh index`.
 
 ```
-~/.secdef/contexts/
+~/.intellissh/contexts/
 ├── environment.md              # Network topology, hosts, IPs
 ├── tools/
 │   ├── suricata.md             # IDS reference
@@ -292,34 +292,34 @@ The more specific your context files, the better the AI's suggestions. Include a
 ### Daemon
 
 ```bash
-secdef daemon                    # Start daemon in background
-secdef daemon -f                 # Start in foreground (shows logs in terminal)
-secdef daemon stop               # Stop the daemon (saves state to disk)
-secdef status                    # Show daemon PID, dashboard URL, active sessions
-secdef flush                     # Wipe all session state and start clean
+intellissh daemon                    # Start daemon in background
+intellissh daemon -f                 # Start in foreground (shows logs in terminal)
+intellissh daemon stop               # Stop the daemon (saves state to disk)
+intellissh status                    # Show daemon PID, dashboard URL, active sessions
+intellissh flush                     # Wipe all session state and start clean
 ```
 
 ### Profiles
 
 ```bash
-secdef profiles                          # List all profiles with status + dashboard URLs
-secdef --profile NAME daemon             # Start daemon for a named profile
-secdef --profile NAME daemon stop        # Stop that profile's daemon
-secdef --profile NAME status             # Status for that profile
-secdef --profile NAME flush              # Flush that profile's state only
-export SECDEF_PROFILE=NAME              # Set profile for the whole shell session
+intellissh profiles                          # List all profiles with status + dashboard URLs
+intellissh --profile NAME daemon             # Start daemon for a named profile
+intellissh --profile NAME daemon stop        # Stop that profile's daemon
+intellissh --profile NAME status             # Status for that profile
+intellissh --profile NAME flush              # Flush that profile's state only
+export INTELLISSH_PROFILE=NAME              # Set profile for the whole shell session
 ```
 
 ### Wrapped Sessions
 
 ```bash
-secdef wrap ssh user@host                    # AI-augmented SSH session
-secdef wrap ssh -p 2222 user@host            # SSH on custom port
-secdef wrap bash                             # AI-augmented local shell
-secdef wrap docker exec -it c bash           # Wrap docker container
-secdef wrap kubectl exec -it pod -- bash     # Wrap k8s pod
-# With a profile (or set SECDEF_PROFILE in the shell instead):
-secdef --profile net1 wrap ssh user@host
+intellissh wrap ssh user@host                    # AI-augmented SSH session
+intellissh wrap ssh -p 2222 user@host            # SSH on custom port
+intellissh wrap bash                             # AI-augmented local shell
+intellissh wrap docker exec -it c bash           # Wrap docker container
+intellissh wrap kubectl exec -it pod -- bash     # Wrap k8s pod
+# With a profile (or set INTELLISSH_PROFILE in the shell instead):
+intellissh --profile net1 wrap ssh user@host
 ```
 
 ### Ctrl+G (Inside a Wrapped Session)
@@ -334,30 +334,30 @@ Ctrl+G                           # Open AI prompt
 ### RAG Index
 
 ```bash
-secdef index                     # Build index (skips if up to date)
-secdef index --force             # Force rebuild (after editing context files)
-secdef index -f                  # Same as --force
+intellissh index                     # Build index (skips if up to date)
+intellissh index --force             # Force rebuild (after editing context files)
+intellissh index -f                  # Same as --force
 ```
 
 ### Context Files
 
 ```bash
-secdef init                      # Create example context files in ~/.secdef/contexts/
-secdef init                      # Run again to reset (asks for confirmation)
+intellissh init                      # Create example context files in ~/.intellissh/contexts/
+intellissh init                      # Run again to reset (asks for confirmation)
 ```
 
 After editing context files, always rebuild the index:
 ```bash
-nano ~/.secdef/contexts/environment.md
-secdef index --force
+nano ~/.intellissh/contexts/environment.md
+intellissh index --force
 ```
 
 ### Quick Questions (No Wrapping Needed)
 
 ```bash
-secdef ask "what port is the SIEM dashboard on?"
-secdef ask "write a suricata rule for DNS tunneling"
-secdef ask "how do I check for persistence on a Linux host?"
+intellissh ask "what port is the SIEM dashboard on?"
+intellissh ask "write a suricata rule for DNS tunneling"
+intellissh ask "how do I check for persistence on a Linux host?"
 ```
 
 ### Dashboard
@@ -371,15 +371,15 @@ http://127.0.0.1:8033/api/state  # Raw JSON API (for scripting)
 
 ## Configuration
 
-`~/.secdef/config.json`:
+`~/.intellissh/config.json`:
 
 ```json
 {
   "ollama_url": "http://localhost:11434",
   "model": "qwen3:14b",
   "embed_model": "nomic-embed-text",
-  "context_dir": "~/.secdef/contexts",
-  "db_dir": "~/.secdef/vectordb",
+  "context_dir": "~/.intellissh/contexts",
+  "db_dir": "~/.intellissh/vectordb",
   "rag_top_k": 6,
   "rag_chunk_size": 800,
   "rag_chunk_overlap": 100,
@@ -391,7 +391,7 @@ http://127.0.0.1:8033/api/state  # Raw JSON API (for scripting)
   "max_transcript_entries": 200,
   "web_port": 8033,
   "log_sessions": true,
-  "log_dir": "~/.secdef/logs"
+  "log_dir": "~/.intellissh/logs"
 }
 ```
 
@@ -419,7 +419,7 @@ http://127.0.0.1:8033/api/state  # Raw JSON API (for scripting)
 ## File Layout
 
 ```
-~/.secdef/                         # Default profile
+~/.intellissh/                         # Default profile
 ├── config.json                    # Settings (edit this)
 ├── daemon.sock                    # UNIX socket (daemon ↔ wrappers)
 ├── daemon.pid                     # Daemon PID file
@@ -436,11 +436,11 @@ http://127.0.0.1:8033/api/state  # Raw JSON API (for scripting)
 │   │   └── network-forensics.md
 │   └── playbooks/
 │       └── incident-response.md
-├── vectordb/                      # ChromaDB store (built by secdef index)
+├── vectordb/                      # ChromaDB store (built by intellissh index)
 ├── logs/                          # Session transcript logs
 │   └── session_20260320_1430.md
 └── profiles/                      # Named profiles (one dir per profile)
-    ├── net1/                      # SECDEF_PROFILE=net1
+    ├── net1/                      # INTELLISSH_PROFILE=net1
     │   ├── config.json            # Profile-specific settings (optional)
     │   ├── daemon.sock
     │   ├── daemon.pid
@@ -451,7 +451,7 @@ http://127.0.0.1:8033/api/state  # Raw JSON API (for scripting)
     │   ├── contexts/              # Network 1 environment docs
     │   ├── vectordb/              # Network 1 RAG index
     │   └── logs/
-    └── net2/                      # SECDEF_PROFILE=net2
+    └── net2/                      # INTELLISSH_PROFILE=net2
         ├── ...                    # Same structure, fully isolated
         └── dashboard.port         # Auto-assigned port (e.g. 8035)
 ```
@@ -464,13 +464,13 @@ http://127.0.0.1:8033/api/state  # Raw JSON API (for scripting)
 
 2. **Rebuild the index after ANY context file change:**
    ```bash
-   secdef index --force
+   intellissh index --force
    ```
 
 3. **Add context mid-exercise.** Learned something new? Drop a quick `.md` file:
    ```bash
-   echo "# New Finding\nAttacker uses port 8443 for C2" > ~/.secdef/contexts/custom/findings.md
-   secdef index --force
+   echo "# New Finding\nAttacker uses port 8443 for C2" > ~/.intellissh/contexts/custom/findings.md
+   intellissh index --force
    ```
 
 4. **Use the dashboard on a second monitor.** It gives you a birds-eye view of all sessions, detected IOCs, and the full AI analysis log — without cluttering your terminals.
@@ -479,20 +479,66 @@ http://127.0.0.1:8033/api/state  # Raw JSON API (for scripting)
 
 6. **Flush between exercises.** Each exercise is its own scenario — carry-over IOCs and transcript from a previous run will confuse the AI:
    ```bash
-   secdef flush
+   intellissh flush
    ```
 
-7. **Pipe-friendly `secdef ask`** for quick lookups without wrapping:
+7. **Pipe-friendly `intellissh ask`** for quick lookups without wrapping:
    ```bash
-   secdef ask "iptables rule to block 10.0.2.0/24"
-   secdef ask "suricata rule syntax for detecting DNS tunneling"
+   intellissh ask "iptables rule to block 10.0.2.0/24"
+   intellissh ask "suricata rule syntax for detecting DNS tunneling"
    ```
 
 8. **Check daemon logs if something isn't working:**
    ```bash
-   cat ~/.secdef/daemon.log
-   secdef daemon -f          # restart in foreground to see live output
+   cat ~/.intellissh/daemon.log
+   intellissh daemon -f          # restart in foreground to see live output
    ```
+
+---
+
+## Uninstall
+
+**1. Stop any running daemons first:**
+
+```bash
+intellissh daemon stop
+
+# If using profiles, stop each one:
+intellissh --profile net1 daemon stop
+intellissh --profile net2 daemon stop
+```
+
+**2. Remove the binaries:**
+
+```bash
+rm ~/.local/bin/intellissh
+rm ~/.local/bin/intellissh-daemon
+rm ~/.local/bin/intellissh-wrap
+```
+
+**3. Remove all data (config, state, logs, RAG index, context files):**
+
+```bash
+rm -rf ~/.intellissh/
+```
+
+This removes everything: config, session state, IOC history, AI analysis logs, context files, vector database, and session transcript logs. There is no way to recover this data afterwards.
+
+**4. (Optional) Remove the PATH entry added by install.sh:**
+
+Open your shell rc file (`~/.zshrc`, `~/.bashrc`, or `~/.profile`) and delete the two lines that were added:
+
+```
+# IntelliSSH
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+**5. (Optional) Remove Ollama models if no longer needed:**
+
+```bash
+ollama rm qwen3:14b
+ollama rm nomic-embed-text
+```
 
 ---
 

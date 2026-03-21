@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-secdef-daemon — Shared situation-awareness daemon for SecDef.
+intellissh-daemon — Shared situation-awareness daemon for IntelliSSH.
 
 Runs in the background, accumulates terminal transcripts from all connected
 PTY wrapper sessions via a UNIX domain socket. Maintains a rolling situation
@@ -47,18 +47,18 @@ except ImportError as e:
 # ─── Profile & paths ─────────────────────────────────────────────────────────
 
 def _resolve_base_dir():
-    profile = os.environ.get("SECDEF_PROFILE", "").strip()
+    profile = os.environ.get("INTELLISSH_PROFILE", "").strip()
     if not profile:
-        return Path("~/.secdef").expanduser(), None
+        return Path("~/.intellissh").expanduser(), None
     safe = "".join(c for c in profile if c.isalnum() or c in "_-")[:32]
-    return Path(f"~/.secdef/profiles/{safe}").expanduser(), safe
+    return Path(f"~/.intellissh/profiles/{safe}").expanduser(), safe
 
 BASE_DIR, PROFILE = _resolve_base_dir()
 CONFIG_PATH = BASE_DIR / "config.json"
 SOCKET_PATH = BASE_DIR / "daemon.sock"
 PID_PATH = BASE_DIR / "daemon.pid"
 INDEX_HASH_FILE = BASE_DIR / ".index_hash"
-COLLECTION_NAME = "secdef_contexts"
+COLLECTION_NAME = "intellissh_contexts"
 LOG_DIR = BASE_DIR / "logs"
 STATE_PATH = BASE_DIR / "state.json"
 DASHBOARD_PORT_FILE = BASE_DIR / "dashboard.port"
@@ -266,7 +266,7 @@ class SituationEngine:
             tmp.write_text(json.dumps(state, indent=2))
             tmp.replace(STATE_PATH)
         except OSError as e:
-            print(f"[secdef-daemon] Warning: could not save state: {e}")
+            print(f"[intellissh-daemon] Warning: could not save state: {e}")
 
     def _load_state(self):
         """Restore state from disk if available."""
@@ -281,10 +281,10 @@ class SituationEngine:
             self.events = deque(state.get("events", []), maxlen=50)
             self.ai_analyses = deque(state.get("ai_analyses", []), maxlen=30)
             saved_at = state.get("saved_at", "unknown")
-            print(f"[secdef-daemon] Restored state from {saved_at} "
+            print(f"[intellissh-daemon] Restored state from {saved_at} "
                   f"({len(self.transcript)} transcript entries, {len(self.iocs)} IOCs)")
         except Exception as e:
-            print(f"[secdef-daemon] Warning: could not load state: {e}")
+            print(f"[intellissh-daemon] Warning: could not load state: {e}")
 
     def flush(self):
         """Reset all in-memory state and delete the persisted state file."""
@@ -300,14 +300,14 @@ class SituationEngine:
         if STATE_PATH.exists():
             STATE_PATH.unlink()
         self._init_log()
-        print("[secdef-daemon] State flushed — starting clean.")
+        print("[intellissh-daemon] State flushed — starting clean.")
 
     def _init_log(self):
         LOG_DIR.mkdir(parents=True, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.session_log = LOG_DIR / f"session_{ts}.md"
         with open(self.session_log, "w") as f:
-            f.write(f"# SecDef Session Log — {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
+            f.write(f"# IntelliSSH Session Log — {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n")
 
     def _log(self, text):
         if self.session_log:
@@ -541,7 +541,7 @@ def build_analysis_prompt(config, engine, session, user_request=None):
 
     # Base system prompt
     system = textwrap.dedent("""\
-    You are SecDef, a blue team security operations assistant embedded in the operator's
+    You are IntelliSSH, a blue team security operations assistant embedded in the operator's
     terminal sessions. You can see their commands and output across multiple SSH sessions.
 
     ROLE: You are a real-time advisor during a security defense training exercise.
@@ -667,14 +667,14 @@ class DaemonServer:
         web_port = self.config.get("web_port", 8033)
         try:
             web_server, web_port = start_web_server(self.engine, web_port)
-            print(f"[secdef-daemon] Dashboard: http://127.0.0.1:{web_port}")
+            print(f"[intellissh-daemon] Dashboard: http://127.0.0.1:{web_port}")
         except OSError as e:
-            print(f"[secdef-daemon] Dashboard failed to start: {e}")
+            print(f"[intellissh-daemon] Dashboard failed to start: {e}")
 
         profile_label = f"[profile: {PROFILE}]" if PROFILE else "[default profile]"
-        print(f"[secdef-daemon] Listening on {SOCKET_PATH}")
-        print(f"[secdef-daemon] Model: {self.config['model']}")
-        print(f"[secdef-daemon] PID: {os.getpid()} {profile_label}")
+        print(f"[intellissh-daemon] Listening on {SOCKET_PATH}")
+        print(f"[intellissh-daemon] Model: {self.config['model']}")
+        print(f"[intellissh-daemon] PID: {os.getpid()} {profile_label}")
 
         while self.running:
             try:
@@ -699,7 +699,7 @@ class DaemonServer:
             PID_PATH.unlink()
         if DASHBOARD_PORT_FILE.exists():
             DASHBOARD_PORT_FILE.unlink()
-        print("\n[secdef-daemon] Stopped.")
+        print("\n[intellissh-daemon] Stopped.")
 
     def _handle_client(self, conn):
         try:
@@ -810,7 +810,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SecDef — Situation Dashboard</title>
+<title>IntelliSSH — Situation Dashboard</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=IBM+Plex+Sans:wght@300;400;500;600&display=swap');
 
@@ -952,7 +952,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <div class="header">
-  <h1><span class="live"></span> SECDEF SITUATION DASHBOARD</h1>
+  <h1><span class="live"></span> INTELLISSH SITUATION DASHBOARD</h1>
   <div class="meta">
     Session started: <span id="start">--:--:--</span> &nbsp;|&nbsp;
     Updated: <span id="now">--:--:--</span>
