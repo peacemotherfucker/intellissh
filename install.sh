@@ -79,11 +79,21 @@ fi
 # ── Models ──
 if command -v ollama &>/dev/null; then
     echo ""
-    echo -e "${BOLD}Pull Ollama models:${NC}"
-    read -p "  Pull nomic-embed-text (for RAG)? [Y/n] " -n 1 -r; echo
-    [[ ! $REPLY =~ ^[Nn]$ ]] && ollama pull nomic-embed-text
-    read -p "  Pull qwen3:14b (~9GB)? [y/N] " -n 1 -r; echo
-    [[ $REPLY =~ ^[Yy]$ ]] && ollama pull qwen3:14b
+    echo -e "${BOLD}Ollama models:${NC}"
+
+    if ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
+        echo -e "  ${GREEN}✓${NC} nomic-embed-text already present"
+    else
+        read -p "  Pull nomic-embed-text (for RAG)? [Y/n] " -n 1 -r; echo
+        [[ ! $REPLY =~ ^[Nn]$ ]] && ollama pull nomic-embed-text
+    fi
+
+    if ollama list 2>/dev/null | grep -q "qwen3:14b"; then
+        echo -e "  ${GREEN}✓${NC} qwen3:14b already present"
+    else
+        read -p "  Pull qwen3:14b (~9GB)? [y/N] " -n 1 -r; echo
+        [[ $REPLY =~ ^[Yy]$ ]] && ollama pull qwen3:14b
+    fi
 fi
 
 echo ""
