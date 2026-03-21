@@ -1,0 +1,588 @@
+#!/usr/bin/env python3
+"""
+secdef-wrap — AI-augmented terminal wrapper for SecDef.
+
+Wraps any command (ssh, bash, docker exec, etc.) in a PTY, transparently
+passing through all I/O while capturing commands and output. Sends
+transcripts to the secdef-daemon for cross-session situation awareness.
+
+Ctrl+G summons the AI for analysis or a free-form question.
+
+Usage:
+    secdef wrap ssh analyst@10.0.1.20
+    secdef wrap bash
+    secdef wrap docker exec -it container /bin/bash
+"""
+
+import sys
+import os
+import json
+import socket
+import select
+import signal
+import pty
+import fcntl
+import struct
+import termios
+import tty
+import re
+import time
+from pathlib import Path
+
+
+# ─── Profile & paths ─────────────────────────────────────────────────────────
+
+def _resolve_base_dir():
+    profile = os.environ.get("SECDEF_PROFILE", "").strip()
+    if not profile:
+        return Path("~/.secdef").expanduser(), None
+    safe = "".join(c for c in profile if c.isalnum() or c in "_-")[:32]
+    return Path(f"~/.secdef/profiles/{safe}").expanduser(), safe
+
+BASE_DIR, PROFILE = _resolve_base_dir()
+SOCKET_PATH = BASE_DIR / "daemon.sock"
+DASHBOARD_PORT_FILE = BASE_DIR / "dashboard.port"
+
+CTRL_G = b"\x07"  # ASCII BEL = Ctrl+G
+
+
+def get_dashboard_url():
+    if DASHBOARD_PORT_FILE.exists():
+        try:
+            return f"http://127.0.0.1:{DASHBOARD_PORT_FILE.read_text().strip()}"
+        except OSError:
+            pass
+    return "http://127.0.0.1:8033"
+
+# ─── Terminal colors (for the AI panel) ──────────────────────────────────────
+
+class C:
+    RESET = "\033[0m"
+    DIM = "\033[2m"
+    BOLD = "\033[1m"
+    CYAN = "\033[36m"
+    YELLOW = "\033[33m"
+    GREEN = "\033[32m"
+    BLUE = "\033[34m"
+    MAGENTA = "\033[35m"
+    RED = "\033[31m"
+    # Box drawing
+    HLINE = "─"
+    VLINE = "│"
+    TL = "┌"
+    TR = "┐"
+    BL = "└"
+    BR = "┘"
+
+
+def get_terminal_width():
+    try:
+        cols = os.get_terminal_size().columns
+    except OSError:
+        cols = 80
+    return cols
+
+
+# ─── Daemon communication ────────────────────────────────────────────────────
+
+class DaemonClient:
+    """Communicates with secdef-daemon via UNIX socket."""
+
+    def __init__(self):
+        self.connected = False
+
+    def _connect(self):
+        if not SOCKET_PATH.exists():
+            return None
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(str(SOCKET_PATH))
+            sock.settimeout(60)
+            return sock
+        except (ConnectionRefusedError, FileNotFoundError, OSError):
+            return None
+
+    def send_transcript(self, session, cmd, output):
+        sock = self._connect()
+        if not sock:
+            return None
+        try:
+            msg = json.dumps({
+                "type": "transcript",
+                "session": session,
+                "cmd": cmd,
+                "output": output[-5000:],  # last 5k chars
+            }) + "\n"
+            sock.sendall(msg.encode("utf-8"))
+            # Read response
+            resp = self._recv(sock)
+            return resp
+        except Exception:
+            return None
+        finally:
+            sock.close()
+
+    def send_transcript_safe(self, session, cmd, output):
+        """Non-blocking transcript send — truncate output safely."""
+        sock = self._connect()
+        if not sock:
+            return None
+        try:
+            truncated = output[-5000:] if len(output) > 5000 else output
+            msg = json.dumps({
+                "type": "transcript",
+                "session": session,
+                "cmd": cmd,
+                "output": truncated,
+            }) + "\n"
+            sock.sendall(msg.encode("utf-8"))
+            resp = self._recv(sock)
+            return resp
+        except Exception:
+            return None
+        finally:
+            sock.close()
+
+    def request_analysis(self, session, question=None):
+        sock = self._connect()
+        if not sock:
+            return None
+        try:
+            msg_data = {"type": "analyze", "session": session}
+            if question:
+                msg_data["request"] = question
+            msg = json.dumps(msg_data) + "\n"
+            sock.sendall(msg.encode("utf-8"))
+            resp = self._recv(sock)
+            return resp
+        except Exception:
+            return None
+        finally:
+            sock.close()
+
+    def get_status(self):
+        sock = self._connect()
+        if not sock:
+            return None
+        try:
+            sock.sendall(json.dumps({"type": "status"}) .encode("utf-8") + b"\n")
+            return self._recv(sock)
+        except Exception:
+            return None
+        finally:
+            sock.close()
+
+    def _recv(self, sock):
+        buf = b""
+        while True:
+            try:
+                data = sock.recv(65536)
+                if not data:
+                    break
+                buf += data
+                if b"\n" in buf:
+                    line = buf.split(b"\n")[0]
+                    return json.loads(line.decode("utf-8", errors="replace"))
+            except socket.timeout:
+                break
+        if buf.strip():
+            try:
+                return json.loads(buf.decode("utf-8", errors="replace"))
+            except json.JSONDecodeError:
+                pass
+        return None
+
+
+# ─── AI panel display ────────────────────────────────────────────────────────
+
+def display_ai_panel(text, suggestions=None, is_alert=False):
+    """Display AI response in a bordered panel below the terminal."""
+    width = get_terminal_width()
+    inner_w = width - 4
+
+    color = C.YELLOW if is_alert else C.CYAN
+    label = " 💡 SecDef Alert " if is_alert else " 💡 SecDef "
+
+    sys.stdout.write("\r\n")
+
+    # Top border
+    label_len = len(label) - 1  # emoji takes 2 cols but we approximate
+    pad = inner_w - len(label) + 2
+    sys.stdout.write(f"{color}{C.TL}{C.HLINE}{C.BOLD}{label}{C.RESET}{color}{C.HLINE * max(pad, 1)}{C.TR}{C.RESET}\n")
+
+    # Content
+    lines = text.split("\n")
+    for line in lines:
+        # Word wrap long lines
+        while len(line) > inner_w:
+            sys.stdout.write(f"{color}{C.VLINE}{C.RESET} {line[:inner_w]}{color} {C.VLINE}{C.RESET}\n")
+            line = line[inner_w:]
+        padded = line + " " * max(0, inner_w - len(line))
+        sys.stdout.write(f"{color}{C.VLINE}{C.RESET} {padded}{color} {C.VLINE}{C.RESET}\n")
+
+    # Suggestions
+    if suggestions:
+        sys.stdout.write(f"{color}{C.VLINE}{C.RESET} {' ' * inner_w}{color} {C.VLINE}{C.RESET}\n")
+        for i, sug in enumerate(suggestions[:4], 1):
+            sug_line = f"{C.GREEN}[{i}]{C.RESET} {sug}"
+            # Approximate visible length (strip ANSI for padding)
+            vis_len = len(f"[{i}] {sug}")
+            pad = " " * max(0, inner_w - vis_len)
+            sys.stdout.write(f"{color}{C.VLINE}{C.RESET} {sug_line}{pad}{color} {C.VLINE}{C.RESET}\n")
+
+    # Bottom border
+    sys.stdout.write(f"{color}{C.BL}{C.HLINE * (inner_w + 2)}{C.BR}{C.RESET}\n")
+    sys.stdout.flush()
+
+
+def display_prompt_panel():
+    """Show the Ctrl+G prompt for user input."""
+    width = get_terminal_width()
+    inner_w = width - 4
+    color = C.MAGENTA
+
+    sys.stdout.write("\r\n")
+    sys.stdout.write(f"{color}{C.TL}{C.HLINE} SecDef Query {C.HLINE * max(inner_w - 14, 1)}{C.TR}{C.RESET}\n")
+    sys.stdout.write(f"{color}{C.VLINE}{C.RESET} Ask a question (or Enter for auto-analysis):{' ' * max(inner_w - 47, 0)}{color} {C.VLINE}{C.RESET}\n")
+    sys.stdout.write(f"{color}{C.BL}{C.HLINE * (inner_w + 2)}{C.BR}{C.RESET}\n")
+    sys.stdout.write(f"{C.MAGENTA}{C.BOLD}secdef> {C.RESET}")
+    sys.stdout.flush()
+
+
+# ─── Command extraction ─────────────────────────────────────────────────────
+
+def strip_ansi(text):
+    """Remove ANSI escape codes from text."""
+    return re.sub(r"\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07|\x1b\(B|\r", "", text)
+
+
+# ─── PTY wrapper ─────────────────────────────────────────────────────────────
+
+def run_pty_wrapper(cmd_args, session_name):
+    """
+    Spawn cmd_args in a PTY. Pass through all I/O transparently.
+    Capture command/output pairs and send to daemon.
+    Intercept Ctrl+G for AI interaction.
+
+    Capture strategy:
+    - Track what the user types as the "command" (input buffer until Enter)
+    - After Enter, accumulate PTY output into an output buffer
+    - When user presses Enter again (next command), flush the previous
+      command+output pair to the daemon
+    - Also flush on a 1.5s idle timeout after last PTY output
+    """
+    daemon = DaemonClient()
+
+    # Check daemon is running
+    status = daemon.get_status()
+    daemon_ok = status is not None
+
+    # Derive session name
+    if not session_name:
+        if len(cmd_args) >= 2 and cmd_args[0] == "ssh":
+            for arg in cmd_args[1:]:
+                if not arg.startswith("-"):
+                    session_name = arg.split("@")[-1] if "@" in arg else arg
+                    break
+        if not session_name:
+            session_name = cmd_args[0] if cmd_args else "shell"
+
+    # Save original terminal settings
+    old_tty = termios.tcgetattr(sys.stdin)
+
+    # Create PTY
+    master_fd, slave_fd = pty.openpty()
+
+    # Fork the child process
+    pid = os.fork()
+    if pid == 0:
+        # Child process
+        os.close(master_fd)
+        os.setsid()
+        fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
+        os.dup2(slave_fd, 0)
+        os.dup2(slave_fd, 1)
+        os.dup2(slave_fd, 2)
+        if slave_fd > 2:
+            os.close(slave_fd)
+        os.execvp(cmd_args[0], cmd_args)
+        sys.exit(1)
+
+    # Parent process
+    os.close(slave_fd)
+    tty.setraw(sys.stdin.fileno())
+
+    # Sync terminal size
+    def sync_size(*args):
+        try:
+            rows, cols = os.get_terminal_size()
+            winsize = struct.pack("HHHH", rows, cols, 0, 0)
+            fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+        except OSError:
+            pass
+
+    sync_size()
+    signal.signal(signal.SIGWINCH, sync_size)
+
+    # ── State tracking ──
+    input_buf = []          # What user is currently typing (keystrokes before Enter)
+    pending_cmd = ""        # The command that was just submitted (after Enter)
+    output_buf = []         # PTY output since last Enter
+    last_output_time = 0    # Timestamp of last PTY output (for idle flush)
+    has_pending = False     # Whether we have unflushed command+output
+    in_ai_mode = False
+    ai_input_buf = ""
+    IDLE_FLUSH_SECS = 1.5  # Flush after this many seconds of no PTY output
+
+    def flush_to_daemon():
+        """Send the current command+output pair to the daemon."""
+        nonlocal pending_cmd, output_buf, has_pending, last_output_time
+        if not has_pending or not daemon_ok:
+            output_buf = []
+            has_pending = False
+            return
+        if not pending_cmd:
+            # No command captured — skip (likely just login banner or empty enter)
+            output_buf = []
+            has_pending = False
+            return
+
+        raw_output = "".join(output_buf)
+        clean_output = strip_ansi(raw_output).strip()
+
+        # The PTY output includes:
+        #   1. Echo of the command (first line)
+        #   2. Command output
+        #   3. Next prompt (last line)
+        # Strip the echo (first line) and prompt (last line)
+        lines = clean_output.split("\n")
+        if len(lines) >= 2:
+            # Skip first line (command echo) and last line (prompt)
+            body_lines = lines[1:]
+            # Strip trailing prompt line if it looks like one
+            if body_lines:
+                last = body_lines[-1].strip()
+                if (last.endswith("$") or last.endswith("#") or last.endswith(">")
+                        or "@" in last):
+                    body_lines = body_lines[:-1]
+            output_text = "\n".join(body_lines).strip()
+        elif len(lines) == 1:
+            output_text = ""
+        else:
+            output_text = clean_output
+
+        resp = daemon.send_transcript_safe(session_name, pending_cmd, output_text)
+        if resp and resp.get("type") == "event_queued":
+            count = resp.get("count", 1)
+            sys.stdout.write(
+                f"\r\033[33m⚡ {count} security event(s) detected — analysing → dashboard\033[0m\r\n"
+            )
+            sys.stdout.flush()
+
+        pending_cmd = ""
+        output_buf = []
+        has_pending = False
+        last_output_time = 0
+
+    # Show connection banner
+    profile_label = f" | Profile: {PROFILE}" if PROFILE else ""
+    if daemon_ok:
+        banner = f"\033[2m[secdef] Connected{profile_label} | Session: {session_name} | Ctrl+G for AI\033[0m\r\n"
+    else:
+        banner = f"\033[2m[secdef] Daemon not running (start: secdef daemon){profile_label} | Ctrl+G unavailable\033[0m\r\n"
+    os.write(sys.stdout.fileno(), banner.encode())
+
+    try:
+        while True:
+            # Calculate select timeout: if we have pending output, use idle timer
+            if has_pending and last_output_time > 0:
+                elapsed = time.time() - last_output_time
+                timeout = max(0.05, IDLE_FLUSH_SECS - elapsed)
+            else:
+                timeout = 0.2
+
+            try:
+                rlist, _, _ = select.select([sys.stdin, master_fd], [], [], timeout)
+            except (ValueError, OSError):
+                break
+
+            # Check idle flush
+            if has_pending and last_output_time > 0:
+                if time.time() - last_output_time >= IDLE_FLUSH_SECS:
+                    flush_to_daemon()
+
+            for fd in rlist:
+                if fd == sys.stdin:
+                    try:
+                        data = os.read(sys.stdin.fileno(), 4096)
+                    except OSError:
+                        data = b""
+                    if not data:
+                        continue
+
+                    if in_ai_mode:
+                        for byte in data:
+                            b = bytes([byte])
+                            if b == b"\r" or b == b"\n":
+                                sys.stdout.write("\r\n")
+                                sys.stdout.flush()
+                                in_ai_mode = False
+
+                                if daemon_ok:
+                                    question = ai_input_buf.strip() if ai_input_buf.strip() else None
+                                    label = f'"{question}"' if question else "auto-analysis"
+                                    # Fire-and-forget: send to daemon in a thread
+                                    import threading
+                                    def _send_analysis(s, q):
+                                        try:
+                                            daemon.request_analysis(s, q)
+                                        except Exception:
+                                            pass
+                                    threading.Thread(
+                                        target=_send_analysis,
+                                        args=(session_name, question),
+                                        daemon=True
+                                    ).start()
+                                    sys.stdout.write(
+                                        f"\033[2m  ✓ Sent {label} → check dashboard "
+                                        f"({get_dashboard_url()})\033[0m\r\n"
+                                    )
+                                else:
+                                    sys.stdout.write(f"\033[31m  [Daemon not running]\033[0m\r\n")
+                                sys.stdout.flush()
+                                ai_input_buf = ""
+                                continue
+                            elif b == b"\x03" or b == b"\x1b":
+                                sys.stdout.write(f"\r\n\033[2m  [Cancelled]\033[0m\r\n")
+                                sys.stdout.flush()
+                                in_ai_mode = False
+                                ai_input_buf = ""
+                                continue
+                            elif b == b"\x7f" or b == b"\x08":
+                                if ai_input_buf:
+                                    ai_input_buf = ai_input_buf[:-1]
+                                    sys.stdout.write("\b \b")
+                                    sys.stdout.flush()
+                                continue
+                            else:
+                                try:
+                                    char = b.decode("utf-8", errors="ignore")
+                                    ai_input_buf += char
+                                    sys.stdout.write(char)
+                                    sys.stdout.flush()
+                                except Exception:
+                                    pass
+                                continue
+                        continue
+
+                    # Check for Ctrl+G
+                    if CTRL_G in data:
+                        # Flush any pending output first
+                        flush_to_daemon()
+                        in_ai_mode = True
+                        ai_input_buf = ""
+                        input_buf = []
+                        display_prompt_panel()
+                        continue
+
+                    # Check if Enter was pressed
+                    if b"\r" in data or b"\n" in data:
+                        # Build command from what was typed before Enter
+                        # (data before the \r may contain the last chars typed)
+                        pre_enter = data.split(b"\r")[0].split(b"\n")[0]
+                        if pre_enter:
+                            input_buf.append(pre_enter.decode("utf-8", errors="replace"))
+
+                        typed_cmd = "".join(input_buf).strip()
+
+                        # Flush previous command+output
+                        flush_to_daemon()
+
+                        # Start collecting output for this new command
+                        pending_cmd = typed_cmd
+                        has_pending = True
+                        output_buf = []
+                        last_output_time = 0
+                        input_buf = []
+                    else:
+                        # Accumulate typed characters
+                        decoded = data.decode("utf-8", errors="replace")
+                        # Handle backspace: remove last char from buffer
+                        for ch in decoded:
+                            if ch in ("\x7f", "\x08"):  # DEL or BS
+                                if input_buf:
+                                    last = input_buf[-1]
+                                    if len(last) > 1:
+                                        input_buf[-1] = last[:-1]
+                                    else:
+                                        input_buf.pop()
+                            elif ch == "\x15":  # Ctrl+U (clear line)
+                                input_buf = []
+                            elif ch == "\x17":  # Ctrl+W (delete word)
+                                text = "".join(input_buf).rstrip()
+                                text = text.rsplit(None, 1)[0] if " " in text else ""
+                                input_buf = [text] if text else []
+                            elif ord(ch) >= 32:  # printable
+                                input_buf.append(ch)
+
+                    # Pass through to PTY
+                    os.write(master_fd, data)
+
+                elif fd == master_fd:
+                    try:
+                        data = os.read(master_fd, 65536)
+                    except OSError:
+                        break
+                    if not data:
+                        break
+
+                    # Transparent pass-through
+                    os.write(sys.stdout.fileno(), data)
+
+                    # Accumulate output
+                    decoded = data.decode("utf-8", errors="replace")
+                    output_buf.append(decoded)
+                    last_output_time = time.time()
+
+            # Check if child process is still alive
+            result = os.waitpid(pid, os.WNOHANG)
+            if result[0] != 0:
+                break
+
+    except (KeyboardInterrupt, SystemExit):
+        pass
+    finally:
+        termios.tcsetattr(sys.stdin, termios.TCSAFLUSH, old_tty)
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+        # Final flush
+        flush_to_daemon()
+        sys.stdout.write(f"\n\033[2m[secdef] Session '{session_name}' ended.\033[0m\n")
+
+
+# ─── Main ────────────────────────────────────────────────────────────────────
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: secdef wrap <command> [args...]")
+        print("       secdef wrap ssh analyst@10.0.1.20")
+        print("       secdef wrap bash")
+        sys.exit(1)
+
+    cmd_args = sys.argv[1:]
+
+    # Allow --session flag to name the session
+    session_name = None
+    if "--session" in cmd_args:
+        idx = cmd_args.index("--session")
+        if idx + 1 < len(cmd_args):
+            session_name = cmd_args[idx + 1]
+            cmd_args = cmd_args[:idx] + cmd_args[idx + 2:]
+
+    run_pty_wrapper(cmd_args, session_name)
+
+
+if __name__ == "__main__":
+    main()
