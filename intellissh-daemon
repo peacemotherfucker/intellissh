@@ -232,6 +232,8 @@ class SituationEngine:
         self.iocs = {}  # ioc_value → {"type": ..., "first_seen": ..., "context": ...}
         self.events = deque(maxlen=50)  # high-level events
         self.ai_analyses = deque(maxlen=30)  # AI analysis log for web dashboard
+        self.active_analyses = {}  # id → {session, trigger, queued_at} — in-flight LLM requests
+        self._next_analysis_id = 0
         self.last_auto_detect_time = {}  # session → timestamp (debounce)
         self.session_log = None
         self.start_time = datetime.now().strftime("%H:%M:%S")
@@ -294,6 +296,7 @@ class SituationEngine:
             self.iocs = {}
             self.events = deque(maxlen=50)
             self.ai_analyses = deque(maxlen=30)
+            self.active_analyses = {}
             self.last_auto_detect_time = {}
             self.start_time = datetime.now().strftime("%H:%M:%S")
             self._dirty = False
@@ -481,6 +484,24 @@ class SituationEngine:
             lines.append(f"[{e['time']}] [{e['session']}] $ {e['cmd']}\n{out_preview}")
         return "\n\n".join(lines)
 
+    def begin_analysis(self, session, trigger):
+        """Register an in-flight LLM request. Returns an ID to pass to end_analysis."""
+        with self.lock:
+            aid = self._next_analysis_id
+            self._next_analysis_id += 1
+            self.active_analyses[aid] = {
+                "id": aid,
+                "session": session,
+                "trigger": trigger,
+                "queued_at": datetime.now().strftime("%H:%M:%S"),
+            }
+        return aid
+
+    def end_analysis(self, aid):
+        """Remove a completed or failed LLM request from the active set."""
+        with self.lock:
+            self.active_analyses.pop(aid, None)
+
     def get_recent_analyses(self, n=5):
         """Return the last N AI analyses for injection into the next prompt."""
         with self.lock:
@@ -526,6 +547,7 @@ class SituationEngine:
                     for k, v in sorted(self.iocs.items(), key=lambda x: x[1]["count"], reverse=True)[:30]
                 ],
                 "ai_analyses": list(self.ai_analyses),
+                "active_analyses": list(self.active_analyses.values()),
                 "recent_commands": [
                     {"time": e["time"], "session": e["session"], "cmd": e["cmd"]}
                     for e in list(self.transcript)[-20:]
@@ -743,6 +765,7 @@ class DaemonServer:
                     self._send(conn, {"type": "event_queued", "count": len(findings)})
                     # Run analysis in background; result goes to dashboard only
                     def _run_detect(session=session, findings=findings):
+                        aid = self.engine.begin_analysis(session, "auto-detect")
                         try:
                             text, suggestions = run_auto_detect_analysis(
                                 self.config, self.engine, session, findings)
@@ -750,6 +773,8 @@ class DaemonServer:
                         except Exception as e:
                             self.engine.add_ai_analysis(session, "auto-detect",
                                                         f"[Auto-detect error: {e}]", [])
+                        finally:
+                            self.engine.end_analysis(aid)
                     threading.Thread(target=_run_detect, daemon=True).start()
                 else:
                     self._send(conn, {"type": "ack"})
@@ -758,10 +783,11 @@ class DaemonServer:
 
         elif msg_type == "analyze":
             request = msg.get("request", None)
+            trigger = f"hotkey: {request}" if request else "hotkey"
+            aid = self.engine.begin_analysis(session, trigger)
             try:
                 text, suggestions = run_analysis(
                     self.config, self.engine, session, request)
-                trigger = f"hotkey: {request}" if request else "hotkey"
                 self.engine.add_ai_analysis(session, trigger, text, suggestions)
                 self._send(conn, {
                     "type": "response",
@@ -770,6 +796,8 @@ class DaemonServer:
                 })
             except Exception as e:
                 self._send(conn, {"type": "error", "text": f"Analysis error: {e}"})
+            finally:
+                self.engine.end_analysis(aid)
 
         elif msg_type == "status":
             situation = self.engine.build_situation_summary()
@@ -919,6 +947,21 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   .event-session { color: var(--purple); min-width: 80px; }
   .event-text { color: var(--text); }
 
+  @keyframes thinking-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.35; }
+  }
+  .thinking-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 7px 12px; margin-bottom: 8px;
+    border-left: 3px solid var(--yellow); background: var(--bg3); border-radius: 0 6px 6px 0;
+    font-family: var(--mono); font-size: 12px;
+    animation: thinking-pulse 1.4s ease-in-out infinite;
+  }
+  .thinking-spinner { color: var(--yellow); font-size: 14px; }
+  .thinking-label { color: var(--yellow); }
+  .thinking-meta { color: var(--text-dim); }
+
   .ai-entry {
     padding: 10px 14px; margin-bottom: 8px;
     border-left: 3px solid var(--accent); background: var(--bg3); border-radius: 0 6px 6px 0;
@@ -987,6 +1030,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
   <div class="main-area">
     <div class="panel">
       <div class="panel-head">AI Analysis Log</div>
+      <div id="ai-pending"></div>
       <div class="panel-body" id="ai-log" style="max-height:340px;overflow-y:auto;">
         <div class="empty">AI will log analyses here</div>
       </div>
@@ -1054,6 +1098,13 @@ function render(d) {
   if (!d.events || d.events.length === 0) { eh = '<div class="empty">No events yet</div>'; }
   else { d.events.slice().reverse().forEach(function(e) { eh += '<div class="event-row"><span class="event-time">' + esc(e.time) + '</span><span class="event-session">[' + esc(e.session) + ']</span><span class="event-text">' + esc(e.event) + '</span></div>'; }); }
   safeUpdate('events', eh);
+
+  var pending = d.active_analyses || [];
+  var ph = '';
+  pending.forEach(function(a) {
+    ph += '<div class="thinking-row"><span class="thinking-spinner">⟳</span><span class="thinking-label">Analyzing&hellip;</span><span class="thinking-meta">[' + esc(a.session) + '] ' + esc(a.trigger) + ' &middot; queued ' + esc(a.queued_at) + '</span></div>';
+  });
+  safeUpdate('ai-pending', ph);
 
   var ah = '';
   if (!d.ai_analyses || d.ai_analyses.length === 0) { ah = '<div class="empty">AI will log analyses here</div>'; }

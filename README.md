@@ -285,6 +285,92 @@ Edit `~/.intellissh/contexts/` to match your training environment, then run `int
 
 The more specific your context files, the better the AI's suggestions. Include actual IPs, hostnames, credentials, tool paths, and procedures from your training range.
 
+### Converting PDF Manuals to Context Files
+
+System manuals (architecture docs, user guides, troubleshooting references) are valuable context but need to be converted from PDF to IntelliSSH-digestible markdown first. Use a multimodal frontier model (Claude or GPT-4o — both handle PDFs with images natively) with the following prompt:
+
+---
+
+> You are converting a technical system manual PDF into a structured markdown document optimized for RAG (Retrieval-Augmented Generation) ingestion. The output will be chunked into ~800-character segments and used as real-time context by an AI security assistant during live terminal sessions.
+>
+> **Your conversion rules:**
+>
+> **Structure**
+> - Use `##` headings for major topics and `###` for subtopics — headings are included in every chunk and are the primary retrieval signal, so make them specific and descriptive (e.g. `### Health Check Endpoints` not `### Endpoints`)
+> - Keep each section short and self-contained — a chunk must make sense without reading surrounding sections
+> - Every section that mentions a component, service, or host must name it explicitly — do not use pronouns or references like "it" or "the above service"
+>
+> **Content to extract and preserve**
+> - All hostnames, IP addresses, FQDNs, ports, protocols, URLs, and API endpoints — format as inline code
+> - All CLI commands, config file paths, and environment variables — format as fenced code blocks with the shell/language tagged
+> - Connection types, authentication methods, TLS requirements
+> - Health check URLs, expected responses, and timeout values
+> - Troubleshooting steps as numbered lists with exact error messages quoted
+> - Service dependencies and startup/shutdown order
+> - User roles, permissions, and access levels
+>
+> **Images and diagrams**
+> - Architecture diagrams: extract every component, every arrow/connection, and every label into a bullet list of the form `ComponentA → ComponentB (protocol, port)`
+> - Tables and matrices: convert to markdown tables exactly, preserving all values
+> - Screenshots of UIs: describe only the operationally relevant fields, buttons, and values — skip decorative elements
+> - Flow diagrams: convert to numbered steps
+>
+> **Content to discard**
+> - Cover pages, table of contents, legal notices, marketing copy, revision history
+> - Redundant introductory paragraphs that restate the section heading
+> - Generic advice not specific to this system (e.g. "always follow security best practices")
+>
+> **Output format**
+> ```markdown
+> # [System Name] — [Document Type]
+>
+> ## Overview
+> [2-4 bullet points: what the system is, primary role, key dependencies]
+>
+> ## Architecture
+> [extracted from diagrams]
+>
+> ## Hosts and Endpoints
+> [table or list of all hosts, IPs, ports, URLs]
+>
+> ## Connection Types
+> ...
+>
+> ## Health Checks
+> ...
+>
+> ## Troubleshooting
+> ...
+>
+> ## [other sections as needed]
+> ```
+>
+> Be dense. Prefer a bullet list of 10 facts over a paragraph of 3 sentences. Every specific value (port, path, timeout, version) that appears in the PDF must appear in the markdown.
+
+---
+
+Once converted, drop the file into `~/.intellissh/contexts/` and rebuild the index:
+
+```bash
+# Example layout for converted manuals
+~/.intellissh/contexts/
+├── environment.md
+├── manuals/
+│   ├── firewall.md
+│   ├── siem-platform.md
+│   └── vpn-gateway.md
+└── playbooks/
+    └── incident-response.md
+
+# Rebuild after adding files
+intellissh index --force
+```
+
+**Tips:**
+- Process one PDF per conversation turn if the document is large
+- If a PDF covers multiple systems, ask the model to split the output into one file per system — chunks stay more focused that way
+- If a document is updated, just overwrite the file and run `intellissh index --force` — the old index is replaced automatically
+
 ---
 
 ## Command Reference
