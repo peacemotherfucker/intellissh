@@ -84,8 +84,8 @@ if command -v ollama &>/dev/null; then
     if ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
         echo -e "  ${GREEN}✓${NC} nomic-embed-text already present"
     else
-        read -p "  Pull nomic-embed-text (for RAG)? [Y/n] " -n 1 -r; echo
-        [[ ! $REPLY =~ ^[Nn]$ ]] && ollama pull nomic-embed-text
+        read -p "  Pull nomic-embed-text (for RAG / full-corpus search)? [y/N] " -n 1 -r; echo
+        [[ $REPLY =~ ^[Yy]$ ]] && ollama pull nomic-embed-text
     fi
 
     if ollama list 2>/dev/null | grep -q "qwen3:14b"; then
@@ -100,16 +100,18 @@ echo ""
 echo -e "${BOLD}${GREEN}Installation complete!${NC}"
 echo ""
 echo -e "${BOLD}Quick start:${NC}"
-echo -e "  ${CYAN}1.${NC} Edit context files:  ${DIM}nano ~/.intellissh/contexts/environment.md${NC}"
-echo -e "  ${CYAN}2.${NC} Build RAG index:     ${DIM}intellissh index${NC}"
-echo -e "  ${CYAN}3.${NC} Start the AI daemon: ${DIM}intellissh daemon${NC}"
-echo -e "  ${CYAN}4.${NC} Wrap your SSH:       ${DIM}intellissh wrap ssh analyst@10.0.1.20${NC}"
-echo -e "  ${CYAN}5.${NC} Press ${BOLD}Ctrl+G${NC} inside the session to summon the AI"
+echo -e "  ${CYAN}1.${NC} Add context files:   ${DIM}~/.intellissh/contexts/playbooks/mysystem-manual.md${NC}"
+echo -e "  ${CYAN}2.${NC} Start the AI daemon: ${DIM}intellissh --context mysystem daemon${NC}"
+echo -e "  ${CYAN}3.${NC} Wrap your SSH:       ${DIM}intellissh --context mysystem wrap ssh analyst@10.0.1.20${NC}"
+echo -e "  ${CYAN}4.${NC} Press ${BOLD}Ctrl+G${NC} inside the session to summon the AI"
+echo -e "  ${CYAN}5.${NC} Or ask directly:     ${DIM}intellissh ask --context mysystem \"what ports are open?\"${NC}"
 echo ""
 echo -e "${BOLD}Commands:${NC}"
-echo -e "  ${DIM}intellissh daemon${NC}                      Start AI daemon"
-echo -e "  ${DIM}intellissh wrap ssh user@host${NC}           AI-augmented SSH"
-echo -e "  ${DIM}intellissh wrap bash${NC}                    AI-augmented local shell"
-echo -e "  ${DIM}intellissh status${NC}                       Show active sessions"
-echo -e "  ${DIM}intellissh ask \"what port is SIEM on?\"${NC}  Quick question"
+echo -e "  ${DIM}intellissh --context NAME daemon${NC}           Start focused AI daemon for a system"
+echo -e "  ${DIM}intellissh --context NAME wrap ssh user@host${NC} AI-augmented SSH with context"
+echo -e "  ${DIM}intellissh --context NAME ask \"question\"${NC}   Quick question with context"
+echo -e "  ${DIM}intellissh wrap bash${NC}                        AI-augmented local shell"
+echo -e "  ${DIM}intellissh status${NC}                           Show active sessions"
+echo -e "  ${DIM}intellissh contexts${NC}                         List all running contexts"
+echo -e "  ${DIM}intellissh index${NC}                            Build RAG index (full corpus search)"
 echo ""
