@@ -261,8 +261,9 @@ class SituationEngine:
     Accumulates transcripts, tracks IOCs, and provides context to the LLM.
     """
 
-    def __init__(self, config):
+    def __init__(self, config, context_loaded=True):
         self.config = config
+        self.context_loaded = context_loaded  # False when --context set but no files matched
         self.lock = threading.Lock()
         self._dirty = False
         self._max_transcript = config.get("max_transcript_entries", 200)
@@ -579,6 +580,7 @@ class SituationEngine:
                 "start_time": self.start_time,
                 "now": datetime.now().strftime("%H:%M:%S"),
                 "context": CONTEXT_NAME or PROFILE or "default",
+                "context_warning": not self.context_loaded,
                 "threat_level": threat_level,
                 "sessions": {k: v for k, v in self.sessions.items()},
                 "events": list(self.events),
@@ -711,12 +713,13 @@ def run_auto_detect_analysis(config, engine, session, findings, context_text="")
 class DaemonServer:
     def __init__(self, config):
         self.config = config
-        self.engine = SituationEngine(config)
         self.running = False
         # Load focused context files at startup (bypasses RAG when --context is set)
         self.context_text = _load_context_files(
             CONTEXT_NAME, config.get("context_dir", str(BASE_DIR / "contexts"))
         )
+        context_loaded = (not CONTEXT_NAME) or bool(self.context_text)
+        self.engine = SituationEngine(config, context_loaded=context_loaded)
 
     def start(self):
         # Clean up old socket
@@ -752,6 +755,13 @@ class DaemonServer:
         print(f"[intellissh-daemon] PID: {os.getpid()} {mode_label}")
         if self.context_text:
             print(f"[intellissh-daemon] Context mode: direct file injection (no RAG)")
+        elif CONTEXT_NAME:
+            print(f"[intellissh-daemon] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+            print(f"[intellissh-daemon] WARNING: --context '{CONTEXT_NAME}' was set")
+            print(f"[intellissh-daemon] but NO matching files found in contexts dir.")
+            print(f"[intellissh-daemon] Pattern searched: *{CONTEXT_NAME}*")
+            print(f"[intellissh-daemon] Falling back to RAG — context NOT loaded.")
+            print(f"[intellissh-daemon] !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         else:
             print(f"[intellissh-daemon] Context mode: RAG retrieval")
 
@@ -1060,6 +1070,9 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
     Updated: <span id="now">--:--:--</span>
   </div>
 </div>
+<div id="ctx-warning" style="display:none;background:#3a1a1e;border:1px solid #f07178;border-radius:6px;padding:10px 16px;margin-bottom:12px;font-family:var(--mono);font-size:13px;color:#f07178;">
+  ⚠ <strong>CONTEXT NOT LOADED</strong> — <span id="ctx-warning-msg"></span>
+</div>
 
 <div class="grid">
   <div class="sidebar">
@@ -1133,6 +1146,14 @@ function render(d) {
   var ctx = d.context || 'default';
   document.getElementById('ctx-label').textContent =
     ctx === 'default' ? 'SITUATION DASHBOARD' : ctx.toUpperCase() + ' — SITUATION DASHBOARD';
+  var warn = document.getElementById('ctx-warning');
+  var warnMsg = document.getElementById('ctx-warning-msg');
+  if (d.context_warning) {
+    warn.style.display = 'block';
+    warnMsg.textContent = 'No files matching "*' + ctx + '*" were found. AI is answering from general knowledge only — system documentation is NOT loaded. Check your context filename and restart the daemon.';
+  } else {
+    warn.style.display = 'none';
+  }
 
   var t = document.getElementById('threat');
   if (t.textContent !== d.threat_level) {

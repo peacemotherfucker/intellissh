@@ -221,6 +221,7 @@ def cmd_daemon(args):
         print(C.bold("Starting daemon in background..."))
         BASE_DIR.mkdir(parents=True, exist_ok=True)
         log_file = BASE_DIR / "daemon.log"
+        log_offset = log_file.stat().st_size if log_file.exists() else 0
         proc = subprocess.Popen(
             [sys.executable, str(daemon_script)],
             stdout=open(log_file, "a"),
@@ -240,6 +241,29 @@ def cmd_daemon(args):
             print(C.green(f"  Daemon started (PID: {proc.pid})"))
             print(C.dim(f"  Dashboard: {dashboard_url}"))
             print(C.dim(f"  Log:       {log_file}"))
+            # Check which context files were loaded (or warn if none)
+            if CONTEXT:
+                import time as _t
+                _t.sleep(0.5)  # give daemon time to write its log
+                try:
+                    with open(log_file, "rb") as _lf:
+                        _lf.seek(log_offset)
+                        log_txt = _lf.read().decode("utf-8", errors="replace")
+                    loaded = [ln.split("Loaded context: ", 1)[1].strip()
+                              for ln in log_txt.splitlines()
+                              if "Loaded context: " in ln]
+                    if loaded:
+                        print(C.green(f"  ✓ Context loaded ({len(loaded)} file(s)):"))
+                        for fname in loaded:
+                            print(C.dim(f"    {fname}"))
+                    else:
+                        print()
+                        print(C.red(f"  ⚠ WARNING: no context files matched '*{CONTEXT}*'"))
+                        print(C.red(f"    AI will answer from general knowledge only."))
+                        print(C.yellow(f"    Check filenames in ~/.intellissh/contexts/"))
+                        print(C.yellow(f"    then restart: intellissh --context {CONTEXT} daemon"))
+                except OSError:
+                    pass
         else:
             print(C.red(f"  Daemon failed to start. Check {log_file}"))
 
