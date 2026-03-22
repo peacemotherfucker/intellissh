@@ -242,7 +242,7 @@ def display_prompt_panel():
     color = C.MAGENTA
 
     sys.stdout.write("\r\n")
-    sys.stdout.write(f"{color}{C.TL}{C.HLINE} IntelliSSH Query {C.HLINE * max(inner_w - 14, 1)}{C.TR}{C.RESET}\n")
+    sys.stdout.write(f"{color}{C.TL}{C.HLINE} IntelliSSH Query {C.HLINE * max(inner_w - 18, 1)}{C.TR}{C.RESET}\n")
     sys.stdout.write(f"{color}{C.VLINE}{C.RESET} Ask a question (or Enter for auto-analysis):{' ' * max(inner_w - 47, 0)}{color} {C.VLINE}{C.RESET}\n")
     sys.stdout.write(f"{color}{C.BL}{C.HLINE * (inner_w + 2)}{C.BR}{C.RESET}\n")
     sys.stdout.write(f"{C.MAGENTA}{C.BOLD}intellissh> {C.RESET}")
@@ -491,7 +491,9 @@ def run_pty_wrapper(cmd_args, session_name):
                         # (data before the \r may contain the last chars typed)
                         pre_enter = data.split(b"\r")[0].split(b"\n")[0]
                         if pre_enter:
-                            input_buf.append(pre_enter.decode("utf-8", errors="replace"))
+                            pre_str = pre_enter.decode("utf-8", errors="replace")
+                            pre_str = pre_str.replace("\x1b[200~", "").replace("\x1b[201~", "")
+                            input_buf.append(pre_str)
 
                         typed_cmd = "".join(input_buf).strip()
 
@@ -507,6 +509,7 @@ def run_pty_wrapper(cmd_args, session_name):
                     else:
                         # Accumulate typed characters
                         decoded = data.decode("utf-8", errors="replace")
+                        decoded = decoded.replace("\x1b[200~", "").replace("\x1b[201~", "")
                         # Handle backspace: remove last char from buffer
                         for ch in decoded:
                             if ch in ("\x7f", "\x08"):  # DEL or BS
