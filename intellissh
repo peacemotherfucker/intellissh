@@ -34,30 +34,41 @@ import hashlib
 from pathlib import Path
 
 
-# ─── Profile & paths ─────────────────────────────────────────────────────────
+# ─── Context / Profile & paths ───────────────────────────────────────────────
 
-def _parse_profile():
-    """Strip --profile NAME (or -p NAME) from sys.argv and return the profile name."""
-    profile = os.environ.get("INTELLISSH_PROFILE", "").strip() or None
+def _parse_flag(*flags):
+    """Strip a flag and its value from sys.argv; return value or None."""
+    val = None
     i = 1
     while i < len(sys.argv):
-        if sys.argv[i] in ("--profile", "-p") and i + 1 < len(sys.argv):
-            profile = sys.argv[i + 1]
+        if sys.argv[i] in flags and i + 1 < len(sys.argv):
+            val = sys.argv[i + 1]
             sys.argv = sys.argv[:i] + sys.argv[i + 2:]
             break
         i += 1
-    return profile
+    return val
 
 
-def _resolve_base_dir(profile):
-    if not profile:
+# --context takes precedence; --profile is legacy alias for isolation-only use
+CONTEXT = (_parse_flag("--context", "-c")
+           or os.environ.get("INTELLISSH_CONTEXT", "").strip()
+           or None)
+PROFILE = (_parse_flag("--profile", "-p")
+           or os.environ.get("INTELLISSH_PROFILE", "").strip()
+           or None)
+
+# Context drives isolation; fall back to profile if no context given
+_ISOLATION = CONTEXT or PROFILE
+
+
+def _resolve_base_dir(isolation):
+    if not isolation:
         return Path("~/.intellissh").expanduser()
-    safe = "".join(c for c in profile if c.isalnum() or c in "_-")[:32]
+    safe = "".join(c for c in isolation if c.isalnum() or c in "_-")[:32]
     return Path(f"~/.intellissh/profiles/{safe}").expanduser()
 
 
-PROFILE = _parse_profile()
-BASE_DIR = _resolve_base_dir(PROFILE)
+BASE_DIR = _resolve_base_dir(_ISOLATION)
 CONFIG_PATH = BASE_DIR / "config.json"
 SOCKET_PATH = BASE_DIR / "daemon.sock"
 PID_PATH = BASE_DIR / "daemon.pid"
@@ -195,7 +206,9 @@ def cmd_daemon(args):
         print(C.dim(f"  Start it with: ollama serve"))
         sys.exit(1)
 
-    child_env = {**os.environ, "INTELLISSH_PROFILE": PROFILE or ""}
+    child_env = {**os.environ,
+                 "INTELLISSH_CONTEXT": CONTEXT or "",
+                 "INTELLISSH_PROFILE": PROFILE or ""}
 
     if "--foreground" in args or "-f" in args:
         print(C.bold("Starting daemon in foreground..."))
@@ -220,7 +233,9 @@ def cmd_daemon(args):
         time.sleep(1)
         if is_daemon_running():
             dashboard_url = _get_dashboard_url()
-            if PROFILE:
+            if CONTEXT:
+                print(C.dim(f"  Context:   {CONTEXT}"))
+            elif PROFILE:
                 print(C.dim(f"  Profile:   {PROFILE}"))
             print(C.green(f"  Daemon started (PID: {proc.pid})"))
             print(C.dim(f"  Dashboard: {dashboard_url}"))
@@ -247,6 +262,7 @@ def cmd_wrap(args):
         print(C.red(f"Cannot find: {wrap_script}"))
         sys.exit(1)
 
+    os.environ["INTELLISSH_CONTEXT"] = CONTEXT or ""
     os.environ["INTELLISSH_PROFILE"] = PROFILE or ""
     os.execvp(sys.executable, [sys.executable, str(wrap_script)] + args)
 
@@ -289,10 +305,12 @@ def cmd_status(args):
         print(C.bold("\nIntelliSSH Status"))
         print(C.dim("─" * 40))
         pid = PID_PATH.read_text().strip() if PID_PATH.exists() else "?"
-        if PROFILE:
+        if CONTEXT:
+            print(f"  Context:    {C.cyan(CONTEXT)}")
+        elif PROFILE:
             print(f"  Profile:    {C.cyan(PROFILE)}")
         else:
-            print(f"  Profile:    {C.dim('default')}")
+            print(f"  Context:    {C.dim('default')}")
         print(f"  Daemon PID: {C.green(pid)}")
         print(f"  Dashboard:  {C.cyan(_get_dashboard_url())}")
         sessions = resp.get("sessions", [])
@@ -441,7 +459,7 @@ def cmd_index(args):
         sys.exit(1)
 
     embed_model = config.get("embed_model", "nomic-embed-text")
-    if embed_model not in models:
+    if not any(m == embed_model or m.startswith(embed_model + ":") for m in models):
         print(C.yellow(f"Pulling {embed_model}..."))
         subprocess.run(["ollama", "pull", embed_model], check=True)
 
@@ -495,6 +513,7 @@ def cmd_index(args):
             return results
 
     class EmbFn:
+        name = "ollama-embed"
         def __call__(self, input):
             return embed_fn(input)
 
@@ -559,10 +578,56 @@ def _chunk(text, source, config, chunk_size=None, overlap=None):
 
 # ─── Ask (quick one-shot, no session) ───────────────────────────────────────
 
+def _load_context_files(context_name, ctx_dir):
+    """Find and load all .md files matching *context_name*.
+
+    Searches the global ~/.intellissh/contexts first, then ctx_dir if different.
+    Context files are a shared library; profiles only isolate state.
+    """
+    global_ctx = Path("~/.intellissh/contexts").expanduser()
+    search_dirs = [global_ctx]
+    extra = Path(ctx_dir).expanduser()
+    if extra != global_ctx and extra.exists():
+        search_dirs.append(extra)
+
+    pattern = f"*{context_name}*"
+    seen = set()
+    matches = []
+    for d in search_dirs:
+        for f in sorted(d.rglob(pattern)):
+            if f not in seen:
+                seen.add(f)
+                matches.append(f)
+
+    if not matches:
+        return "", []
+    parts = []
+    for f in matches:
+        try:
+            parts.append(f"### {f.name}\n\n{f.read_text(encoding='utf-8')}")
+        except OSError:
+            pass
+    return "\n\n---\n\n".join(parts), matches
+
+
 def cmd_ask(args):
     if not args:
         print(C.red("Usage: intellissh ask \"question\""))
+        print(C.dim("       intellissh ask --context <name> \"question\"   # load specific context file"))
+        print(C.dim("       intellissh ask --debug \"question\"             # show retrieved chunks (RAG)"))
         return
+
+    debug = "--debug" in args
+    args = [a for a in args if a != "--debug"]
+
+    # --context flag overrides the global CONTEXT for this one-shot ask
+    ask_context = CONTEXT
+    if "--context" in args:
+        idx = args.index("--context")
+        if idx + 1 < len(args):
+            ask_context = args[idx + 1]
+            args = args[:idx] + args[idx + 2:]
+
     question = " ".join(args)
     config = load_config()
 
@@ -572,38 +637,99 @@ def cmd_ask(args):
         print(C.red("Missing: pip install requests"))
         sys.exit(1)
 
-    # Simple direct query to Ollama with RAG context
-    try:
-        import chromadb
-        db_path = Path(config.get("db_dir", "~/.intellissh/vectordb")).expanduser()
-        if db_path.exists():
-            client = chromadb.PersistentClient(path=str(db_path))
+    # Context loading: direct file load (--context) or RAG fallback
+    ctx = ""
+    ctx_sources = []
+    rag_error = None
 
-            def embed_fn_inner(texts):
-                url = f"{config['ollama_url']}/api/embed"
-                r = req.post(url, json={"model": config.get("embed_model", "nomic-embed-text"), "input": texts}, timeout=120)
-                r.raise_for_status()
-                return r.json().get("embeddings", [])
-
-            class EF:
-                def __call__(self, input):
-                    return embed_fn_inner(input)
-
-            col = client.get_or_create_collection("intellissh_contexts", embedding_function=EF(),
-                                                   metadata={"hnsw:space": "cosine"})
-            if col.count() > 0:
-                res = col.query(query_texts=[question], n_results=config.get("rag_top_k", 6))
-                ctx = "\n---\n".join(res["documents"][0]) if res["documents"][0] else ""
-            else:
-                ctx = ""
+    if ask_context:
+        # Direct file load — no vector search needed
+        ctx, matched_files = _load_context_files(ask_context, config.get("context_dir", str(BASE_DIR / "contexts")))
+        if ctx:
+            if debug:
+                print(C.bold(C.cyan(f"\n── Context: {ask_context} ({len(matched_files)} file(s)) ──")))
+                for f in matched_files:
+                    print(C.dim(f"  {f.name}"))
+                print()
         else:
-            ctx = ""
-    except Exception:
-        ctx = ""
+            rag_error = f"No files matching '*{ask_context}*' in {config.get('context_dir')}"
+            if debug:
+                print(C.red(f"\n── Context error: {rag_error} ──\n"))
+    elif not ask_context:
+        # RAG retrieval (full corpus vector search)
+        try:
+            import chromadb
+            db_path = Path(config.get("db_dir", "~/.intellissh/vectordb")).expanduser()
+            if not db_path.exists():
+                rag_error = f"Vector DB not found at {db_path} — run: intellissh index"
+            else:
+                client = chromadb.PersistentClient(path=str(db_path))
 
-    system = "You are IntelliSSH, a blue team security assistant. Be concise and direct."
-    if ctx:
-        system += f"\n\nENVIRONMENT CONTEXT:\n{ctx}"
+                def get_embedding(text):
+                    em = config.get("embed_model", "nomic-embed-text")
+                    try:
+                        r = req.post(f"{config['ollama_url']}/api/embed",
+                                     json={"model": em, "input": [text]}, timeout=120)
+                        r.raise_for_status()
+                        embs = r.json().get("embeddings", [])
+                        if embs:
+                            return embs[0]
+                    except Exception:
+                        pass
+                    r2 = req.post(f"{config['ollama_url']}/api/embeddings",
+                                  json={"model": em, "prompt": text}, timeout=120)
+                    r2.raise_for_status()
+                    return r2.json().get("embedding", [])
+
+                col = client.get_collection("intellissh_contexts")
+                count = col.count()
+                if count == 0:
+                    rag_error = "Index is empty — run: intellissh index"
+                else:
+                    q_emb = get_embedding(question)
+                    res = col.query(query_embeddings=[q_emb], n_results=config.get("rag_top_k", 6),
+                                    include=["documents", "metadatas", "distances"])
+                    docs = res["documents"][0] if res["documents"][0] else []
+                    metas = res["metadatas"][0] if res["metadatas"][0] else []
+                    dists = res["distances"][0] if res["distances"][0] else []
+                    min_sim = config.get("rag_min_similarity", 0.1)
+                    if debug:
+                        print(C.bold(C.cyan(f"\n── Raw retrieval ({count} chunks in index) ──")))
+                        for i, (d, m, dist) in enumerate(zip(docs, metas, dists), 1):
+                            sim = 1 - dist
+                            flag = C.green("✓") if sim >= min_sim else C.red(f"✗ below min_sim={min_sim}")
+                            print(C.dim(f"  [{i}] sim={sim:.3f} {flag}  {m.get('source','?')} › {m.get('section','?')}"))
+                        print()
+                    kept = [(d, m, 1 - dist) for d, m, dist in zip(docs, metas, dists)
+                            if (1 - dist) >= min_sim]
+                    ctx = "\n---\n".join(d for d, _, _ in kept)
+                    ctx_sources = [(m.get("source", "?"), m.get("section", "?"), s)
+                                   for _, m, s in kept]
+        except Exception as e:
+            rag_error = str(e)
+
+    if debug and not ask_context:
+        if rag_error:
+            print(C.red(f"\n── RAG error: {rag_error} ──"))
+        print(C.bold(C.cyan(f"\n── Retrieved {len(ctx_sources)} chunks (rag_top_k={config.get('rag_top_k', 6)}, min_sim={config.get('rag_min_similarity', 0.1)}) ──")))
+        if ctx_sources:
+            for i, (src, section, sim) in enumerate(ctx_sources, 1):
+                print(C.dim(f"  [{i}] {src} › {section}  (similarity: {sim:.3f})"))
+        else:
+            print(C.red("  No chunks retrieved — model will answer from general knowledge only"))
+        print()
+
+    if not ctx:
+        system = "You are IntelliSSH, a blue team security assistant. Be concise and direct."
+    else:
+        system = (
+            "You are IntelliSSH, a blue team security assistant. "
+            "Answer the question using ONLY the environment context provided below. "
+            "Quote specific values (IPs, ports, parameters, commands) directly from the context. "
+            "If the answer is not present in the context, say \"Not found in indexed documents\" "
+            "— do not answer from general knowledge.\n\n"
+            f"ENVIRONMENT CONTEXT:\n{ctx}"
+        )
 
     payload = {
         "model": config.get("model", "qwen3:14b"),
@@ -631,15 +757,17 @@ def cmd_ask(args):
 
 # ─── Profiles ────────────────────────────────────────────────────────────────
 
-def cmd_profiles(args):
-    """List all profiles with their running status and dashboard URL."""
-    print(C.bold("\nIntelliSSH Profiles"))
+def cmd_contexts(args):
+    """List all contexts/profiles with their running status and dashboard URL."""
+    print(C.bold("\nIntelliSSH Contexts"))
     print(C.dim("─" * 50))
+
+    active_name = CONTEXT or PROFILE or "default"
 
     def _row(name, base_dir):
         running = _profile_is_running(base_dir)
         status = C.green("running") if running else C.dim("stopped")
-        active = C.yellow(" ← active") if name == (PROFILE or "default") else ""
+        active = C.yellow(" ← active") if name == active_name else ""
         dashboard = ""
         if running:
             dashboard = C.dim(f"  {_get_dashboard_url(base_dir)}")
@@ -652,8 +780,9 @@ def cmd_profiles(args):
             if p.is_dir():
                 _row(p.name, p)
     print()
-    print(C.dim("  Usage: intellissh --profile <name> daemon"))
-    print(C.dim("         export INTELLISSH_PROFILE=<name>"))
+    print(C.dim("  Usage: intellissh --context <name> daemon   # isolated daemon + focused context"))
+    print(C.dim("         export INTELLISSH_CONTEXT=<name>"))
+    print(C.dim("  Note:  --profile is a legacy alias for --context"))
     print()
 
 
@@ -661,22 +790,24 @@ def cmd_profiles(args):
 
 def print_usage():
     print(C.bold(C.cyan("IntelliSSH — AI-Augmented Blue Team Terminal\n")))
-    print(f"  {C.cyan('intellissh daemon')}                  Start the AI daemon")
-    print(f"  {C.cyan('intellissh daemon stop')}             Stop the daemon")
-    print(f"  {C.cyan('intellissh daemon -f')}               Start in foreground (debug)")
-    print(f"  {C.cyan('intellissh wrap ssh user@host')}      Wrap an SSH session")
-    print(f"  {C.cyan('intellissh wrap bash')}               Wrap a local shell")
-    print(f"  {C.cyan('intellissh status')}                  Show daemon status")
-    print(f"  {C.cyan('intellissh flush')}                   Reset all session state")
-    print(f"  {C.cyan('intellissh profiles')}                List all profiles")
-    print(f"  {C.cyan('intellissh init')}                    Initialize context files")
-    print(f"  {C.cyan('intellissh index')}                   Build RAG vector store")
-    print(f"  {C.cyan('intellissh ask \"question\"')}          Quick one-shot question")
+    print(f"  {C.cyan('intellissh daemon')}                        Start the AI daemon")
+    print(f"  {C.cyan('intellissh daemon stop')}                   Stop the daemon")
+    print(f"  {C.cyan('intellissh daemon -f')}                     Start in foreground (debug)")
+    print(f"  {C.cyan('intellissh wrap ssh user@host')}            Wrap an SSH session")
+    print(f"  {C.cyan('intellissh wrap bash')}                     Wrap a local shell")
+    print(f"  {C.cyan('intellissh status')}                        Show daemon status")
+    print(f"  {C.cyan('intellissh flush')}                         Reset all session state")
+    print(f"  {C.cyan('intellissh contexts')}                      List all contexts")
+    print(f"  {C.cyan('intellissh init')}                          Initialize context files")
+    print(f"  {C.cyan('intellissh index')}                         Build RAG vector store")
+    print(f"  {C.cyan('intellissh ask \"question\"')}                Quick one-shot question")
+    print(f"  {C.cyan('intellissh ask --context <name> \"question\"')} Ask with specific context file")
     print()
-    print(C.dim("  Profile flag (isolate state per environment):"))
-    print(C.dim("    intellissh --profile net1 daemon"))
-    print(C.dim("    intellissh --profile net1 wrap ssh user@host"))
-    print(C.dim("    export INTELLISSH_PROFILE=net1   # set once per shell session"))
+    print(C.dim("  Context flag (isolate state + load focused knowledge per system):"))
+    print(C.dim("    intellissh --context powergrid daemon"))
+    print(C.dim("    intellissh --context powergrid wrap ssh analyst@10.0.0.1"))
+    print(C.dim("    intellissh --context powergrid ask \"what is the nominal voltage?\""))
+    print(C.dim("    export INTELLISSH_CONTEXT=powergrid   # set once per shell session"))
     print()
     print(C.dim("  During a wrapped session, press Ctrl+G to summon the AI."))
 
@@ -703,8 +834,8 @@ def main():
         cmd_ask(args)
     elif cmd == "flush":
         cmd_flush(args)
-    elif cmd == "profiles":
-        cmd_profiles(args)
+    elif cmd in ("contexts", "profiles"):
+        cmd_contexts(args)
     elif cmd in ("-h", "--help", "help"):
         print_usage()
     else:

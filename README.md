@@ -1,6 +1,6 @@
 # IntelliSSH — AI-Augmented Blue Team Terminal
 
-A real-time AI assistant that wraps your SSH/shell sessions during security defense training. It sees your commands and output across multiple sessions, builds situational awareness, auto-detects security events, and provides actionable suggestions — all powered by a local Ollama LLM with RAG.
+A real-time AI assistant that wraps your SSH/shell sessions during security defense training. It sees your commands and output across multiple sessions, builds situational awareness, auto-detects security events, and provides actionable suggestions — all powered by a local Ollama LLM.
 
 **Everything runs locally. No data leaves your machine.**
 
@@ -26,9 +26,9 @@ IntelliSSH runs as two components: a **background daemon** (the brain) and **PTY
        │  ├─ Rolling transcript (all sessions)│
        │  ├─ Auto-detected IOCs               │
        │  ├─ Security event timeline          │
-       │  └─ RAG context from your docs       │
+       │  └─ Context: direct file or RAG      │
        │                                      │
-       │  Ollama (qwen3:14b + nomic-embed)    │
+       │  Ollama (qwen3:14b)                  │
        └─────────────────────────────────────┘
 ```
 
@@ -46,20 +46,17 @@ curl -fsSL https://ollama.ai/install.sh | sh
 chmod +x install.sh
 ./install.sh
 
-# 3. Pull models
-ollama pull qwen3:14b
-ollama pull nomic-embed-text
+# 3. Add your context files (convert PDFs first — see Converting PDF Manuals below)
+ls ~/.intellissh/contexts/playbooks/
 
-# 4. Edit context files for YOUR environment
-nano ~/.intellissh/contexts/environment.md
+# 4a. Start a focused daemon for a specific system (recommended):
+intellissh --context powergrid daemon
+intellissh --context powergrid wrap ssh analyst@10.0.17.1
 
-# 5. Build RAG index
-intellissh index
-
-# 6. Start the AI daemon
+# 4b. Or start with full RAG (searches all docs):
+ollama pull nomic-embed-text    # embedding model required for RAG
+intellissh index                # build vector store
 intellissh daemon
-
-# 7. Wrap your SSH sessions
 intellissh wrap ssh analyst@10.0.1.20
 ```
 
@@ -74,7 +71,7 @@ intellissh daemon              # Start the AI brain (background)
 intellissh daemon -f           # Start in foreground (see logs)
 intellissh daemon stop         # Stop the daemon
 intellissh status              # Check daemon + active sessions
-intellissh profiles            # List all profiles with status and dashboard URLs
+intellissh contexts            # List all contexts with status and dashboard URLs
 ```
 
 ### Wrapping Sessions
@@ -165,74 +162,70 @@ intellissh flush              # Wipe all state and start a clean sheet
 
 Use `flush` at the start of a new exercise or when you want the AI to forget everything it has seen.
 
-### Parallel Profiles (Multiple Independent Environments)
+### Context-Based Isolation (Multiple Independent Environments)
 
-Run two completely isolated IntelliSSH instances in parallel — separate state, separate IOCs, separate AI analyses, separate dashboards. Nothing leaks between them.
+Use `--context <name>` to run focused, isolated IntelliSSH instances per system. Each context provides:
 
-**Option A — env var (recommended for shell sessions):**
+1. **Focused knowledge** — the daemon loads only the matching `.md` file(s) at startup, injecting them directly into every LLM prompt. No vector search, no retrieval gaps — the model sees the exact document for that system.
+2. **Isolated state** — separate transcript, IOCs, AI analyses, and dashboard per context. Nothing leaks between them.
 
-Open a dedicated terminal window for each environment and set the profile once:
-
-```bash
-# Terminal window for Network 1
-export INTELLISSH_PROFILE=net1
-intellissh daemon
-intellissh wrap ssh analyst@10.0.1.20
-intellissh wrap ssh analyst@10.0.1.30
-
-# Terminal window for Network 2
-export INTELLISSH_PROFILE=net2
-intellissh daemon
-intellissh wrap ssh analyst@192.168.2.10
-intellissh wrap ssh analyst@192.168.2.20
-```
-
-**Option B — `--profile` flag (explicit per-command):**
+**Typical workflow — one terminal window per system:**
 
 ```bash
-intellissh --profile net1 daemon
-intellissh --profile net1 wrap ssh analyst@10.0.1.20
-intellissh --profile net2 daemon
-intellissh --profile net2 wrap ssh analyst@192.168.2.10
+# Terminal window for system_1
+export INTELLISSH_CONTEXT=system_1
+intellissh daemon              # loads *system_1*.md into memory at startup
+intellissh wrap ssh analyst@10.0.17.1
+intellissh wrap ssh analyst@10.0.17.2
+
+# Terminal window for Satellite
+export INTELLISSH_CONTEXT=system_2
+intellissh daemon              # loads *system_2*.md into memory at startup
+intellissh wrap ssh analyst@10.0.25.1
 ```
 
-Both options can be mixed — the flag always takes precedence over the env var.
+**Or with explicit flags:**
+
+```bash
+intellissh --context system_1 daemon
+intellissh --context system_1 wrap ssh analyst@10.0.17.1
+intellissh --context system_2 daemon
+intellissh --context system_2 wrap ssh analyst@10.0.25.1
+```
+
+The flag always takes precedence over the env var.
 
 **Checking what's running:**
 
 ```bash
-intellissh profiles
-# IntelliSSH Profiles
+intellissh contexts
+# IntelliSSH Contexts
 # ──────────────────────────────────────────────────
 #   default        stopped
-#   net1           running  ← active   http://127.0.0.1:8033
-#   net2           running             http://127.0.0.1:8034
+#   system_1      running  ← active   http://127.0.0.1:8033
+#   system_2      running             http://127.0.0.1:8034
 ```
 
-Each profile gets its own:
-- State, transcript, IOCs, AI analyses (`~/.intellissh/profiles/<name>/state.json`)
-- Dashboard on an auto-assigned port (8033, 8034, …)
-- Context files and RAG vector store (`~/.intellissh/profiles/<name>/contexts/` and `vectordb/`)
-- Config (`~/.intellissh/profiles/<name>/config.json`) — copy from default and customise per environment
-- Logs (`~/.intellissh/profiles/<name>/logs/`)
+**How context files are matched:**
 
-The default profile (no `--profile` flag, no env var) continues to use `~/.intellissh/` as before.
+The context name is matched as a glob pattern `*<name>*` against all `.md` files in `~/.intellissh/contexts/`. For example `--context system_1` loads any file whose name contains `system_1`:
 
-**Per-profile context files:**
-
-Each profile has its own context directory, so you can describe each network separately:
-
-```bash
-export INTELLISSH_PROFILE=net1
-intellissh init               # creates ~/.intellissh/profiles/net1/contexts/
-nano ~/.intellissh/profiles/net1/contexts/environment.md   # describe Network 1
-intellissh index
-
-export INTELLISSH_PROFILE=net2
-intellissh init               # creates ~/.intellissh/profiles/net2/contexts/
-nano ~/.intellissh/profiles/net2/contexts/environment.md   # describe Network 2
-intellissh index
 ```
+~/.intellissh/contexts/playbooks/system_1-manual.md     ← loaded
+~/.intellissh/contexts/playbooks/six_seven_67.md   	← NOT loaded
+~/.intellissh/contexts/playbooks/chaos_as_a_service.md 	← NOT loaded
+```
+
+Context files are a **shared library** — all contexts read from `~/.intellissh/contexts/`. Profiles only isolate runtime state (transcript, IOCs, analyses).
+
+**What each context gets:**
+
+- Dashboard titled `System_1 — SITUATION DASHBOARD` on an auto-assigned port
+- Isolated state: `~/.intellissh/profiles/system_1/state.json`
+- Daemon log: `~/.intellissh/profiles/system_1/daemon.log`
+- Optional per-context config: `~/.intellissh/profiles/system_1/config.json`
+
+**`--profile` is a legacy alias** for `--context` — it provides isolation without loading context files. Existing `--profile` workflows continue to work unchanged.
 
 ### Continuous Analysis
 
@@ -245,8 +238,12 @@ Each Ctrl+G analysis builds on the previous ones rather than starting from scrat
 ### Quick Questions (No Session)
 
 ```bash
-intellissh ask "what port is the SIEM dashboard on?"
+intellissh ask "what port is the service dashboard on?"
 intellissh ask "write a suricata rule for DNS tunneling"
+
+# With focused context — loads the matching file directly, no vector search:
+intellissh ask --context system_1 "which service runs admin dashboard ?"
+intellissh ask --context system_2 "what ports should be listening ?"
 ```
 
 ---
@@ -270,18 +267,26 @@ No JavaScript frameworks, no build step — it's a single self-contained HTML pa
 
 ## Context Files
 
-Edit `~/.intellissh/contexts/` to match your training environment, then run `intellissh index`.
+All context files live in the shared library at `~/.intellissh/contexts/`. They are used two ways:
+
+- **`--context <name>` (direct load)** — the daemon or `ask` command loads any file whose name contains `<name>`. No vector search needed.
+- **RAG (full corpus)** — `intellissh index` chunks all files into a vector store; queries retrieve the most relevant chunks across all files.
 
 ```
 ~/.intellissh/contexts/
-├── environment.md              # Network topology, hosts, IPs
+├── environment.md                      # General network topology
 ├── tools/
-│   ├── suricata.md             # IDS reference
-│   ├── wazuh.md                # SIEM reference
-│   └── network-forensics.md    # tcpdump, zeek
+│   ├── suricata.md                     # IDS reference
+│   ├── wazuh.md                        # SIEM reference
+│   └── network-forensics.md
 └── playbooks/
-    └── incident-response.md    # IR procedures
+    ├── system_1-manual.md        	# intellissh --context system_1 daemon
+    ├── system_2-manual.md 		# intellissh --context system_2 daemon
+    ├── six-seven-control.md    	# intellissh --context six-seven daemon
+    └── incident-response.md
 ```
+
+**Naming tip:** Give each system's file a clear, unique keyword in its filename. The `--context` flag matches on that keyword — `--context system_1` matches `*system_1*`, `--context system_2` matches `*system_2*`.
 
 The more specific your context files, the better the AI's suggestions. Include actual IPs, hostnames, credentials, tool paths, and procedures from your training range.
 
@@ -393,15 +398,15 @@ intellissh status                    # Show daemon PID, dashboard URL, active se
 intellissh flush                     # Wipe all session state and start clean
 ```
 
-### Profiles
+### Contexts
 
 ```bash
-intellissh profiles                          # List all profiles with status + dashboard URLs
-intellissh --profile NAME daemon             # Start daemon for a named profile
-intellissh --profile NAME daemon stop        # Stop that profile's daemon
-intellissh --profile NAME status             # Status for that profile
-intellissh --profile NAME flush              # Flush that profile's state only
-export INTELLISSH_PROFILE=NAME              # Set profile for the whole shell session
+intellissh contexts                              # List all contexts with status + dashboard URLs
+intellissh --context NAME daemon                 # Start daemon for a named context
+intellissh --context NAME daemon stop            # Stop that context's daemon
+intellissh --context NAME status                 # Status for that context
+intellissh --context NAME flush                  # Flush that context's state only
+export INTELLISSH_CONTEXT=NAME                  # Set context for the whole shell session
 ```
 
 ### Wrapped Sessions
@@ -412,8 +417,8 @@ intellissh wrap ssh -p 2222 user@host            # SSH on custom port
 intellissh wrap bash                             # AI-augmented local shell
 intellissh wrap docker exec -it c bash           # Wrap docker container
 intellissh wrap kubectl exec -it pod -- bash     # Wrap k8s pod
-# With a profile (or set INTELLISSH_PROFILE in the shell instead):
-intellissh --profile net1 wrap ssh user@host
+# With a context (or set INTELLISSH_CONTEXT in the shell instead):
+intellissh --context powergrid wrap ssh analyst@10.0.17.1
 ```
 
 ### Ctrl+G (Inside a Wrapped Session)
@@ -449,9 +454,15 @@ intellissh index --force
 ### Quick Questions (No Wrapping Needed)
 
 ```bash
+# Without context — uses RAG (vector search across all indexed files):
 intellissh ask "what port is the SIEM dashboard on?"
 intellissh ask "write a suricata rule for DNS tunneling"
 intellissh ask "how do I check for persistence on a Linux host?"
+
+# With context — loads matching file directly, no vector search (faster, more accurate):
+intellissh ask --context system_1 "which service runs admin dashboard ?"
+intellissh ask --context system_2 "what ports should be listening ?"
+intellissh ask --context system_3 --debug "show me what was loaded"
 ```
 
 ### Dashboard
@@ -513,7 +524,7 @@ http://127.0.0.1:8033/api/state  # Raw JSON API (for scripting)
 ## File Layout
 
 ```
-~/.intellissh/                         # Default profile
+~/.intellissh/                         # Default (no context/profile)
 ├── config.json                    # Settings (edit this)
 ├── daemon.sock                    # UNIX socket (daemon ↔ wrappers)
 ├── daemon.pid                     # Daemon PID file
@@ -521,31 +532,28 @@ http://127.0.0.1:8033/api/state  # Raw JSON API (for scripting)
 ├── dashboard.port                 # Actual dashboard port (auto-managed)
 ├── state.json                     # Persisted engine state (survives restarts)
 ├── .index_hash                    # RAG index checksum (auto-managed)
-├── chat_history                   # Readline history
-├── contexts/                      # YOUR environment docs (edit these)
-│   ├── environment.md             # Network topology, hosts, IPs
+├── contexts/                      # Shared context library (all contexts read from here)
+│   ├── environment.md             # General network topology
 │   ├── tools/
-│   │   ├── suricata.md            # IDS reference
-│   │   ├── wazuh.md               # SIEM reference
-│   │   └── network-forensics.md
+│   │   ├── suricata.md
+│   │   └── wazuh.md
 │   └── playbooks/
+│       ├── system_1-manual.md     # --context system_1 loads this
+│       ├── system_2-manual.md     # --context system_2 loads this
 │       └── incident-response.md
-├── vectordb/                      # ChromaDB store (built by intellissh index)
+├── vectordb/                      # RAG vector store (built by intellissh index)
 ├── logs/                          # Session transcript logs
 │   └── session_20260320_1430.md
-└── profiles/                      # Named profiles (one dir per profile)
-    ├── net1/                      # INTELLISSH_PROFILE=net1
-    │   ├── config.json            # Profile-specific settings (optional)
+└── profiles/                      # Per-context isolated state (auto-created)
+    ├── powergrid/                 # INTELLISSH_CONTEXT=powergrid
+    │   ├── config.json            # Optional per-context settings
     │   ├── daemon.sock
     │   ├── daemon.pid
     │   ├── daemon.log
     │   ├── dashboard.port         # Auto-assigned port (e.g. 8034)
-    │   ├── state.json
-    │   ├── .index_hash
-    │   ├── contexts/              # Network 1 environment docs
-    │   ├── vectordb/              # Network 1 RAG index
+    │   ├── state.json             # Isolated transcript, IOCs, analyses
     │   └── logs/
-    └── net2/                      # INTELLISSH_PROFILE=net2
+    └── satellite/                 # INTELLISSH_CONTEXT=satellite
         ├── ...                    # Same structure, fully isolated
         └── dashboard.port         # Auto-assigned port (e.g. 8035)
 ```
@@ -554,7 +562,7 @@ http://127.0.0.1:8033/api/state  # Raw JSON API (for scripting)
 
 ## Tips for Training
 
-1. **Edit context files BEFORE the exercise.** The more specific your `environment.md` is (real IPs, real hostnames, real credentials), the more useful the AI becomes. A vague context gives vague answers.
+1. **Prepare context files BEFORE the exercise.** Convert system manuals to `.md` and drop them in `~/.intellissh/contexts/playbooks/`. Use `--context <system>` to load the right doc for each session. A vague context gives vague answers — specific IPs, hostnames, ports, and procedures make all the difference.
 
 2. **Rebuild the index after ANY context file change:**
    ```bash
@@ -576,10 +584,10 @@ http://127.0.0.1:8033/api/state  # Raw JSON API (for scripting)
    intellissh flush
    ```
 
-7. **Pipe-friendly `intellissh ask`** for quick lookups without wrapping:
+7. **Use `--context` for focused one-shot questions** — loads the relevant document directly without vector search, giving fast and accurate answers:
    ```bash
-   intellissh ask "iptables rule to block 10.0.2.0/24"
-   intellissh ask "suricata rule syntax for detecting DNS tunneling"
+   intellissh ask --context system_1 "what are the login credentials?"
+   intellissh ask --context system_2 "which services run on port 8443?"
    ```
 
 8. **Check daemon logs if something isn't working:**
@@ -597,9 +605,9 @@ http://127.0.0.1:8033/api/state  # Raw JSON API (for scripting)
 ```bash
 intellissh daemon stop
 
-# If using profiles, stop each one:
-intellissh --profile net1 daemon stop
-intellissh --profile net2 daemon stop
+# If using contexts, stop each one:
+intellissh --context system_1 daemon stop
+intellissh --context system_2 daemon stop
 ```
 
 **2. Remove the binaries:**

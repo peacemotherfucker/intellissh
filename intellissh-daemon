@@ -47,13 +47,16 @@ except ImportError as e:
 # ─── Profile & paths ─────────────────────────────────────────────────────────
 
 def _resolve_base_dir():
+    # --context takes precedence over --profile for isolation
+    context = os.environ.get("INTELLISSH_CONTEXT", "").strip()
     profile = os.environ.get("INTELLISSH_PROFILE", "").strip()
-    if not profile:
-        return Path("~/.intellissh").expanduser(), None
-    safe = "".join(c for c in profile if c.isalnum() or c in "_-")[:32]
-    return Path(f"~/.intellissh/profiles/{safe}").expanduser(), safe
+    isolation = context or profile or ""
+    if not isolation:
+        return Path("~/.intellissh").expanduser(), None, None
+    safe = "".join(c for c in isolation if c.isalnum() or c in "_-")[:32]
+    return Path(f"~/.intellissh/profiles/{safe}").expanduser(), safe, context or None
 
-BASE_DIR, PROFILE = _resolve_base_dir()
+BASE_DIR, PROFILE, CONTEXT_NAME = _resolve_base_dir()
 CONFIG_PATH = BASE_DIR / "config.json"
 SOCKET_PATH = BASE_DIR / "daemon.sock"
 PID_PATH = BASE_DIR / "daemon.pid"
@@ -62,6 +65,42 @@ COLLECTION_NAME = "intellissh_contexts"
 LOG_DIR = BASE_DIR / "logs"
 STATE_PATH = BASE_DIR / "state.json"
 DASHBOARD_PORT_FILE = BASE_DIR / "dashboard.port"
+
+def _load_context_files(context_name, ctx_dir):
+    """Load all .md files matching *context_name*. Returns concatenated text.
+
+    Searches the global ~/.intellissh/contexts first, then ctx_dir if different.
+    Context files are a shared library; profiles only isolate state.
+    """
+    if not context_name:
+        return ""
+    global_ctx = Path("~/.intellissh/contexts").expanduser()
+    search_dirs = [global_ctx]
+    extra = Path(ctx_dir).expanduser()
+    if extra != global_ctx and extra.exists():
+        search_dirs.append(extra)
+
+    pattern = f"*{context_name}*"
+    seen = set()
+    matches = []
+    for d in search_dirs:
+        for f in sorted(d.rglob(pattern)):
+            if f not in seen:
+                seen.add(f)
+                matches.append(f)
+
+    if not matches:
+        print(f"[intellissh-daemon] Warning: no files matching '*{context_name}*' found")
+        return ""
+    parts = []
+    for f in matches:
+        try:
+            parts.append(f"### {f.name}\n\n{f.read_text(encoding='utf-8')}")
+            print(f"[intellissh-daemon] Loaded context: {f.name}")
+        except OSError as e:
+            print(f"[intellissh-daemon] Warning: could not read {f}: {e}")
+    return "\n\n---\n\n".join(parts)
+
 
 DEFAULT_CONFIG = {
     "ollama_url": "http://localhost:11434",
@@ -539,6 +578,7 @@ class SituationEngine:
             return {
                 "start_time": self.start_time,
                 "now": datetime.now().strftime("%H:%M:%S"),
+                "context": CONTEXT_NAME or PROFILE or "default",
                 "threat_level": threat_level,
                 "sessions": {k: v for k, v in self.sessions.items()},
                 "events": list(self.events),
@@ -558,8 +598,8 @@ class SituationEngine:
 
 # ─── LLM interaction ────────────────────────────────────────────────────────
 
-def build_analysis_prompt(config, engine, session, user_request=None):
-    """Build a full prompt with RAG context + situation awareness + recent transcript."""
+def build_analysis_prompt(config, engine, session, user_request=None, context_text=""):
+    """Build a full prompt with context + situation awareness + recent transcript."""
 
     # Base system prompt
     system = textwrap.dedent("""\
@@ -583,11 +623,14 @@ def build_analysis_prompt(config, engine, session, user_request=None):
     - If nothing significant has changed since your last analysis, say so briefly and focus on any delta.
     """)
 
-    # RAG context from environment docs
-    rag_query = user_request if user_request else engine.get_recent_transcript(5, session)
-    env_context = retrieve_context(config, rag_query[:2000])
-    if env_context:
-        system += f"\nENVIRONMENT CONTEXT:\n{env_context}\n"
+    # Environment context: direct file load (context mode) or RAG retrieval (default)
+    if context_text:
+        system += f"\nENVIRONMENT CONTEXT:\n{context_text}\n"
+    else:
+        rag_query = user_request if user_request else engine.get_recent_transcript(5, session)
+        env_context = retrieve_context(config, rag_query[:2000])
+        if env_context:
+            system += f"\nENVIRONMENT CONTEXT:\n{env_context}\n"
 
     # Situation summary
     situation = engine.build_situation_summary()
@@ -620,9 +663,9 @@ def build_analysis_prompt(config, engine, session, user_request=None):
     return messages
 
 
-def run_analysis(config, engine, session, user_request=None):
+def run_analysis(config, engine, session, user_request=None, context_text=""):
     """Run an LLM analysis and return structured response."""
-    messages = build_analysis_prompt(config, engine, session, user_request)
+    messages = build_analysis_prompt(config, engine, session, user_request, context_text)
 
     # Use thinking for complex analysis, off for quick queries
     thinking = "on" if user_request and len(user_request.split()) > 8 else "off"
@@ -643,13 +686,14 @@ def run_analysis(config, engine, session, user_request=None):
     return response, suggestions
 
 
-def run_auto_detect_analysis(config, engine, session, findings):
+def run_auto_detect_analysis(config, engine, session, findings, context_text=""):
     """Run a quick analysis based on auto-detected patterns."""
     findings_str = "\n".join(f"- {desc}: {sample}" for desc, sample in findings)
 
     messages = build_analysis_prompt(config, engine, session,
         f"Auto-detected security events in the latest output:\n{findings_str}\n\n"
-        "Give a brief assessment (2-3 sentences) and 2-3 immediate action suggestions.")
+        "Give a brief assessment (2-3 sentences) and 2-3 immediate action suggestions.",
+        context_text)
 
     response = ollama_chat_sync(config, messages, thinking="off")
 
@@ -669,6 +713,10 @@ class DaemonServer:
         self.config = config
         self.engine = SituationEngine(config)
         self.running = False
+        # Load focused context files at startup (bypasses RAG when --context is set)
+        self.context_text = _load_context_files(
+            CONTEXT_NAME, config.get("context_dir", str(BASE_DIR / "contexts"))
+        )
 
     def start(self):
         # Clean up old socket
@@ -693,10 +741,19 @@ class DaemonServer:
         except OSError as e:
             print(f"[intellissh-daemon] Dashboard failed to start: {e}")
 
-        profile_label = f"[profile: {PROFILE}]" if PROFILE else "[default profile]"
+        if CONTEXT_NAME:
+            mode_label = f"[context: {CONTEXT_NAME}]"
+        elif PROFILE:
+            mode_label = f"[profile: {PROFILE}]"
+        else:
+            mode_label = "[default]"
         print(f"[intellissh-daemon] Listening on {SOCKET_PATH}")
         print(f"[intellissh-daemon] Model: {self.config['model']}")
-        print(f"[intellissh-daemon] PID: {os.getpid()} {profile_label}")
+        print(f"[intellissh-daemon] PID: {os.getpid()} {mode_label}")
+        if self.context_text:
+            print(f"[intellissh-daemon] Context mode: direct file injection (no RAG)")
+        else:
+            print(f"[intellissh-daemon] Context mode: RAG retrieval")
 
         while self.running:
             try:
@@ -768,7 +825,8 @@ class DaemonServer:
                         aid = self.engine.begin_analysis(session, "auto-detect")
                         try:
                             text, suggestions = run_auto_detect_analysis(
-                                self.config, self.engine, session, findings)
+                                self.config, self.engine, session, findings,
+                                self.context_text)
                             self.engine.add_ai_analysis(session, "auto-detect", text, suggestions)
                         except Exception as e:
                             self.engine.add_ai_analysis(session, "auto-detect",
@@ -787,7 +845,8 @@ class DaemonServer:
             aid = self.engine.begin_analysis(session, trigger)
             try:
                 text, suggestions = run_analysis(
-                    self.config, self.engine, session, request)
+                    self.config, self.engine, session, request,
+                    self.context_text)
                 self.engine.add_ai_analysis(session, trigger, text, suggestions)
                 self._send(conn, {
                     "type": "response",
@@ -995,7 +1054,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 </head>
 <body>
 <div class="header">
-  <h1><span class="live"></span> INTELLISSH SITUATION DASHBOARD</h1>
+  <h1><span class="live"></span> INTELLISSH — <span id="ctx-label">SITUATION DASHBOARD</span></h1>
   <div class="meta">
     Session started: <span id="start">--:--:--</span> &nbsp;|&nbsp;
     Updated: <span id="now">--:--:--</span>
@@ -1071,6 +1130,9 @@ function render(d) {
 
   document.getElementById('start').textContent = d.start_time || '--';
   document.getElementById('now').textContent = d.now || '--';
+  var ctx = d.context || 'default';
+  document.getElementById('ctx-label').textContent =
+    ctx === 'default' ? 'SITUATION DASHBOARD' : ctx.toUpperCase() + ' — SITUATION DASHBOARD';
 
   var t = document.getElementById('threat');
   if (t.textContent !== d.threat_level) {

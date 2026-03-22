@@ -33,13 +33,15 @@ from pathlib import Path
 # ─── Profile & paths ─────────────────────────────────────────────────────────
 
 def _resolve_base_dir():
+    context = os.environ.get("INTELLISSH_CONTEXT", "").strip()
     profile = os.environ.get("INTELLISSH_PROFILE", "").strip()
-    if not profile:
-        return Path("~/.intellissh").expanduser(), None
-    safe = "".join(c for c in profile if c.isalnum() or c in "_-")[:32]
-    return Path(f"~/.intellissh/profiles/{safe}").expanduser(), safe
+    isolation = context or profile or ""
+    if not isolation:
+        return Path("~/.intellissh").expanduser(), None, None
+    safe = "".join(c for c in isolation if c.isalnum() or c in "_-")[:32]
+    return Path(f"~/.intellissh/profiles/{safe}").expanduser(), safe, context or None
 
-BASE_DIR, PROFILE = _resolve_base_dir()
+BASE_DIR, PROFILE, CONTEXT_NAME = _resolve_base_dir()
 SOCKET_PATH = BASE_DIR / "daemon.sock"
 DASHBOARD_PORT_FILE = BASE_DIR / "dashboard.port"
 
@@ -385,11 +387,16 @@ def run_pty_wrapper(cmd_args, session_name):
         last_output_time = 0
 
     # Show connection banner
-    profile_label = f" | Profile: {PROFILE}" if PROFILE else ""
-    if daemon_ok:
-        banner = f"\033[2m[intellissh] Connected{profile_label} | Session: {session_name} | Ctrl+G for AI\033[0m\r\n"
+    if CONTEXT_NAME:
+        ctx_label = f" | Context: {CONTEXT_NAME}"
+    elif PROFILE:
+        ctx_label = f" | Profile: {PROFILE}"
     else:
-        banner = f"\033[2m[intellissh] Daemon not running (start: intellissh daemon){profile_label} | Ctrl+G unavailable\033[0m\r\n"
+        ctx_label = ""
+    if daemon_ok:
+        banner = f"\033[2m[intellissh] Connected{ctx_label} | Session: {session_name} | Ctrl+G for AI\033[0m\r\n"
+    else:
+        banner = f"\033[2m[intellissh] Daemon not running (start: intellissh daemon){ctx_label} | Ctrl+G unavailable\033[0m\r\n"
     os.write(sys.stdout.fileno(), banner.encode())
 
     try:
