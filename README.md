@@ -348,7 +348,7 @@ System manuals (architecture docs, user guides, troubleshooting references) are 
 > Be dense. Prefer a bullet list of 10 facts over a paragraph of 3 sentences. Every specific value (port, path, timeout, version) that appears in the PDF must appear in the markdown.
 >
 > **Output file**
-> - Format: `.md` (markdown)
+> - Format: a single `.md` file containing the full RAG-optimized handbook — do not pre-chunk, do not split into multiple files.
 > - Filename: use a descriptive, lowercase, hyphenated name that identifies the system and document type — e.g. `firewall-palo-alto-pa3200.md`, `siem-wazuh-4.7.md`, `vpn-fortigate-60f.md`. The filename is attached as metadata to every chunk and helps the AI understand what it is retrieving.
 > - First line of the file must be an HTML comment with the source document name and conversion date:
 >   ```markdown
